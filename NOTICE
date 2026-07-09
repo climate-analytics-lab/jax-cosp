@@ -1,0 +1,40 @@
+jax-cosp
+Copyright 2026 The jax-cosp Authors (Climate Analytics Lab, UC San Diego)
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------
+Derived work: CFMIP Observation Simulator Package (COSP) v2
+--------------------------------------------------------------------------
+Substantial portions of this software are a translation into Python/JAX of
+the CFMIP Observation Simulator Package, COSP v2.0
+(https://github.com/CFMIP/COSPv2.0), which is distributed under BSD
+3-Clause licenses held by several institutions. The original license
+texts are preserved verbatim in the LICENSES/ directory and continue to
+apply to the portions of this software derived from COSP:
+
+  * Copyright (c) 2015, Regents of the University of Colorado
+    (COSP2 framework, quickbeam radar simulator, quickbeam optics,
+    CloudSat interface, statistics; originally by D. Swales, J. Haynes,
+    R. Marchand, A. Bodas-Salcedo, T. L'Ecuyer, and others)
+    -> LICENSES/COSP-BSD-3-Clause-Colorado.txt
+
+  * Copyright (c) 2008, Lawrence Livermore National Security Limited
+    Liability Corporation (SCOPS / PREC_SCOPS subcolumn generators)
+    -> LICENSES/COSP-BSD-3-Clause-LLNS.txt
+
+  * Copyright (c) 2018, Research Institute for Applied Mechanics (RIAM),
+    Kyushu University (COSP_DIAG_WARMRAIN / CFODD diagnostics by
+    T. Michibata et al.)
+    -> LICENSES/COSP-BSD-3-Clause-Colorado.txt (same terms)
+
+Each ported module cites the specific COSP source file, original authors,
+and reference publications in its docstring. The scientific content of
+the ported algorithms is unchanged; see docs/translation_notes.md for
+documented, intentional implementation differences.
+
+If you use this software in published work, please cite the COSP2
+reference paper: Swales, D. J., Pincus, R., and Bodas-Salcedo, A. (2018),
+The Cloud Feedback Model Intercomparison Project Observational Simulator
+Package: Version 2, Geosci. Model Dev., 11, 77-81,
+doi:10.5194/gmd-11-77-2018.
