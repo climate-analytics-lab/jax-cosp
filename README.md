@@ -10,10 +10,13 @@ state, so model and observations can be compared like-for-like.
 The first milestone is the **CloudSat radar path** — SCOPS/PREC_SCOPS subcolumn
 sampling and the Quickbeam 94-GHz reflectivity simulator — which is what the
 **warm-rain-fraction** diagnostic of Mülmenstädt et al. (2015, 2020) is defined
-on. Later phases grow the package toward the full COSP instrument suite
-(CALIPSO lidar, ISCCP, MODIS, MISR, PARASOL).
+on. Phase 4 added the **CALIPSO lidar path** (`jcosp.lidar.simulate_calipso`):
+532-nm optics, total + perpendicular attenuated backscatter, and the
+GOCCP-style scattering-ratio CFAD, cloud-fraction and thermodynamic-phase
+diagnostics. Later phases grow the package toward the full COSP instrument
+suite (ISCCP, MODIS, MISR, PARASOL).
 
-## Status: alpha (Phase 0–1 of the translation plan)
+## Status: alpha (Phases 0–4 of the translation plan)
 
 | Component | COSP v2 origin | Status |
 | --- | --- | --- |
@@ -27,7 +30,13 @@ on. Later phases grow the package toward the full COSP instrument suite
 | CFAD / vertical regrid / precip flags | `cosp_stats.F90`, `quickbeam.F90` | ported |
 | Warm-rain classification (Mülmenstädt et al. 2020) | original implementation | done |
 | CFODD / warm-rain regimes (`COSP_DIAG_WARMRAIN`) | needs MODIS simulator | planned |
-| CALIPSO / ISCCP / MODIS / MISR / PARASOL | — | planned |
+| CALIPSO lidar optics (532 nm, sphere + non-sphere ice) | `cosp_optics.F90:lidar_optics` | ported |
+| CALIPSO ATB + perpendicular channel | `actsim/lidar_simulator.F90` | ported |
+| CALIPSO SR / CFAD / cloud + phase fractions (GOCCP) | `lidar_simulator.F90:COSP_CLDFRAC` | ported (vgrid path) |
+| Lidar-only cloud / radar-lidar TCC | `cosp_stats.F90:COSP_LIDAR_ONLY_CLOUD` | ported |
+| CALIPSO OPAQ diagnostics (`COSP_OPAQ`) | `lidar_simulator.F90` | planned |
+| ATLID / ground lidar variants | `lidar_simulator.F90` | planned |
+| ISCCP / MODIS / MISR / PARASOL | — | planned |
 
 ## Design
 

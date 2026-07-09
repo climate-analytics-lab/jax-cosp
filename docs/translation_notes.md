@@ -103,6 +103,76 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   transliteration, including `log_units`, surface flagging and R_UNDEF
   handling).
 
+## CALIPSO lidar optics (`jcosp/lidar/optics.py`)
+
+- Port of `cosp_optics.F90:lidar_optics`, **spaceborne branch only** (the
+  ground-based lidar integrates surface-up and is not ported). 532 nm is
+  validated; the 355-nm (ATLID) molecular constants are plumbed through
+  `wavelength` but the ATLID variant is not wired into any driver.
+- The Fortran builds `zheight` by accumulation from the surface and then
+  differences adjacent entries; we use the hydrostatic layer thickness
+  directly (identical up to one rounding of the accumulate-then-difference).
+- The lidar path keeps COSP's *own* physical constants (`rd = 287.04`,
+  `grav = 9.80665`, `km = 1.38e-23`, local `rhoice = 500`), which differ from
+  the radar-path values (`RD = 287.0`, `RHO_ICE = 917`); they are stored as
+  `LIDAR_*` in `jcosp.config` so each ported path stays faithful to its
+  source.
+- **Gradient hardening.** The effective radius is clamped away from zero
+  inside the `rad > 0` masked branch of the extinction so hydrometeor-free
+  volumes don't poison reverse-mode gradients.
+- PARASOL's `tautot_S_liq/ice` column optical depths are computed (they are
+  free by-products) and returned, ready for a future PARASOL port.
+
+## CALIPSO subcolumn stage (`jcosp/lidar/simulator.py`)
+
+- Port of `lidar_simulator.F90:lidar_subcolumn` / `cmp_backsignal` /
+  `cmp_beta`, spaceborne branch. The Fortran computes the *top layer* of the
+  ATB and beta recursions unconditionally (dividing by `2*tau(1)`, which is
+  always > 0 because the molecular part is included); the port applies the
+  same `dtau > 0` guard to every layer, which is equivalent for all real
+  inputs and keeps the degenerate branch finite for gradients.
+- `cmp_beta`'s transmission-underflow fallback (`pnorm/eps` when
+  `exp(-2 tau) <= epsilon`) is reproduced with the input dtype's machine
+  epsilon.
+
+## CALIPSO column stage (`jcosp/lidar/diagnostics.py`)
+
+- Ports of `lidar_simulator.F90:lidar_column` (CALIPSO branch) and
+  `COSP_CLDFRAC`, **only for COSP's default `use_vgrid=.true.`** with the
+  40 x 480 m statistical grid: the model-level (`use_vgrid=.false.`) branch is
+  not ported, and the 23-level "above 8.16 km" split of the phase logic is
+  hard-wired to that grid exactly as in the Fortran.
+- As in the Fortran, ATB, the molecular ATB, temperature, the perpendicular
+  ATB and the category pressure are each regridded **linearly** to the
+  statistical grid *before* the scattering ratio is formed; the category
+  pressure is the layer's **lower-interface** pressure (`phalf(2:nlev+1)` in
+  cosp.F90).
+- **Deviation (indexing slip):** `COSP_CLDFRAC` section 4.1 (levels above
+  8.16 km) uses `pplay(1, nlev)` — gridpoint 1's pressure for every
+  gridpoint — when assigning the high/mid/low category of phase-classified
+  clouds (section 4.2 uses `pplay(i, nlev)`). The port uses the per-point
+  pressure everywhere. The transliteration test carries a
+  `point0_pressure_bug` flag; with a single gridpoint (where the slip is
+  invisible) the port matches the verbatim Fortran logic exactly.
+- The full-attenuation scan (undefined phase below the first volume with
+  SR > 30 beneath 8.16 km) reproduces the Fortran's early-exit loop: the
+  saturating volume itself is still phase-classified, everything cloudy below
+  it becomes phase-undefined, and volumes above 8.16 km never trigger it.
+- The phase-vs-temperature counts test `tmpi/tmpl/tmpu > 0` in the Fortran;
+  the port bins the profile temperature under the (disjoint) phase masks,
+  identical unless a phase-classified volume had T <= 0 K (impossible: such
+  volumes are cloudy, hence above ground with physical temperatures).
+- `COSP_LIDAR_ONLY_CLOUD` is ported and driven exactly as cosp.F90's
+  `use_vgrid` path does: on TOA-first regridded fields. Note the Fortran's
+  near-surface search for the `cloudsat_tcc2` exclusion index scans from
+  index 1 and expects surface-first data; on the TOA-first input it always
+  lands on index 2 (a COSP quirk, reproduced as-is). A zero molecular
+  backscatter would be NaN in the Fortran (triggering no thresholds); the
+  port substitutes the equally inert scattering ratio 1.
+- OPAQ diagnostics (`COSP_OPAQ`: opaque/thin cloud covers, z_opaque,
+  emissivity — Guzman et al. 2017) are **not ported yet**; `lidarcldtype`,
+  `cldtype*` and `cldthinemis` outputs are absent.
+
 ## Warm-rain classification (`jcosp/classify.py`)
 
 - Original implementation of the Mülmenstädt et al. (2020) Methods text (not

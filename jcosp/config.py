@@ -290,3 +290,77 @@ CFODD_HIST_DBZE = CFODD_DBZE_MIN + CFODD_DBZE_WIDTH * np.arange(CFODD_NDBZE + 1)
 CFODD_HIST_ICOD = CFODD_ICOD_MIN + CFODD_ICOD_WIDTH * np.arange(CFODD_NICOD + 1)
 CWP_THRESHOLD = 0.0  # LWP/IWP screening threshold (kg m-2)
 COT_THRESHOLD = 0.3  # Cloud-optical-thickness screening threshold
+
+
+# ---------------------------------------------------------------------------
+# CALIPSO lidar simulator configuration (appended for the Phase-4 lidar port).
+# Sources: cosp_config.F90 (CALIPSO section), cosp_calipso_interface.F90
+# (cosp_calipso_init), lidar_simulator.F90 (COSP_CLDFRAC local parameters) and
+# cosp_optics.F90:lidar_optics (local data). Copyright (c) 2015, Regents of
+# the University of Colorado / (c) 2009 CNRS, BSD-3-Clause; see LICENSES/.
+# ---------------------------------------------------------------------------
+SR_BINS = 15  # Scattering-ratio histogram bins (cosp_config.F90)
+# GOCCP scattering-ratio thresholds (cosp_config.F90).
+CALIPSO_S_CLD = 5.0       # SR above which a volume is "cloudy"
+CALIPSO_S_ATT = 0.01      # SR below which the signal is fully attenuated
+CALIPSO_S_CLD_ATT = 30.0  # SR above which everything below is phase-"undefined"
+# SR histogram bin boundaries (cosp_config.F90: calipso_histBsct). The last
+# edge (999) doubles as the "physically meaningful SR" cap when forming SR.
+CALIPSO_HIST_BSCT = np.array([
+    -1.0, 0.01, 1.2, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0,
+    50.0, 60.0, 80.0, 999.0])
+LIDAR_NCAT = 4    # Cloud-layer categories: low, mid, high, total
+LIDAR_NTYPE = 3   # OPAQ categories (opaque/thin/z_opaque) — OPAQ not yet ported
+LIDAR_NTEMP = 40  # Temperature bins of the phase-vs-temperature diagnostic
+LIDAR_NPHASE = 6  # [ice, liquid, undefined, false ice, false liquid, ice frac]
+# Temperature bin edges (K) of the phase-vs-temperature diagnostic
+# (lidar_simulator.F90: COSP_CLDFRAC 'tempmod'): 0, 183.15..297.15 by 3, 473.15.
+LIDAR_PHASE_TEMP_EDGES = np.concatenate(
+    [[0.0], 183.15 + 3.0 * np.arange(39), [473.15]])
+# ISCCP-style pressure bounds (Pa) of the low/mid/high categories (COSP_CLDFRAC).
+CALIPSO_HIGH_CLOUD_PMAX = 440.0e2  # p < 440 hPa: high
+CALIPSO_MID_CLOUD_PMAX = 680.0e2   # 440 <= p < 680 hPa: mid; p >= 680 hPa: low
+# Number of statistical-grid levels above 8.16 km (COSP_CLDFRAC treats levels
+# 1..23 of the 40x480m grid, 19.2->8.16 km, as never fully attenuating).
+CALIPSO_NLEV_HIGHALT = 23
+# ATBperp(ATB) parameterization from CALIPSO-GOCCP observations at 120 m
+# (Cesana and Chepfer 2013, JGR; cosp_calipso_init):
+#   ice:    ATBperp = ALPHA * ATB
+#   liquid: ATBperp = 1000 * BETA * ATB^2 + GAMMA * ATB
+CALIPSO_ATBPERP_ALPHA = 0.2904
+CALIPSO_ATBPERP_BETA = 0.4099
+CALIPSO_ATBPERP_GAMMA = 0.009
+# Phase-discrimination polynomial (COSP_CLDFRAC alpha50..zeta50, Cesana and
+# Chepfer 2013): ATBperp_line = c0*ATB^5 + c1*ATB^4 + ... + c4*ATB + c5.
+CALIPSO_PHASE_DISCR_COEFFS = np.array([
+    9.0322e+15, -2.1358e+12, 173.3963e+06, -3.9514e+03, 0.2559, -9.4776e-07])
+# Temperature overrides of the polarization phase classification (K).
+CALIPSO_T_FALSE_ICE = 273.15  # "ice" warmer than this is reclassified liquid
+CALIPSO_T_FALSE_LIQ = 231.15  # "liquid" colder than this is reclassified ice
+# Molecular depolarization: the perpendicular molecular backscatter is
+# beta_mol / (1 + 1/0.0284) (Bodhaine et al. 1999; lidar_simulator.F90).
+CALIPSO_MOL_DEPOL = 1.0 / (1.0 + 1.0 / 0.0284)
+
+# --- lidar_optics (cosp_optics.F90) constants ---
+# The lidar optics use COSP's own physical constants (cosp_constants.F90),
+# which differ slightly from the radar-path values above (RD = 287.0); they
+# are named LIDAR_* here so each ported path stays bit-faithful to its source.
+LIDAR_GRAV = 9.80665      # m s-2 (cosp_constants.F90 'grav')
+LIDAR_RD = 287.04         # J kg-1 K-1 (cosp_constants.F90 'rd')
+LIDAR_BOLTZMANN = 1.38e-23  # J K-1 (cosp_constants.F90 'km')
+LIDAR_RHO_LIQ = 1000.0    # kg m-3 (cosp_constants.F90 'rholiq')
+LIDAR_RHO_ICE = 0.5e3     # kg m-3 (lidar_optics local 'rhoice'; NOT 917)
+LIDAR_QSCAT = 2.0         # Particle scattering efficiency at 532 nm
+LIDAR_MAX_RADIUS = 70.0e-6  # Effective-radius cap (m) in lidar_optics
+# Wavelength-dependent molecular scattering / multiple-scattering parameters.
+LIDAR_CMOL = {532: 6.2446e-32, 355: 3.2662e-31}
+LIDAR_RDIFFM = {532: 0.7, 355: 0.6}
+# Polarized-optics polynomials kp(re[um]) = p0*x^4 + p1*x^3 + p2*x^2 + p3*x + p4
+# (Mie theory for spheres; ray-tracing/FDTD composite for non-spherical ice).
+# COSP uses identical coefficients for the LS and CONV variants of each phase.
+LIDAR_POLPART_LIQ = np.array(
+    [2.6980e-8, -3.7701e-6, 1.6594e-4, -0.0024, 0.0626])
+LIDAR_POLPART_ICE_SPHERE = np.array(
+    [-1.0176e-8, 1.7615e-6, -1.0480e-4, 0.0019, 0.0460])
+LIDAR_POLPART_ICE_NONSPHERE = np.array(
+    [1.3615e-8, -2.04206e-6, 7.51799e-5, 0.00078213, 0.0182131])
