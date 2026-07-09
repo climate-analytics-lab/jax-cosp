@@ -120,10 +120,14 @@ def enumerate_re_bins(re_scan=None) -> tuple[np.ndarray, np.ndarray]:
     Edge case (inherited from the Fortran): the last slot of coarse interval
     n and the first slot of interval n+1 can be the same LUT index while
     quantizing Re to slightly different values (they differ by at most about
-    half of each interval's step, < ~5% relative — e.g. slot at the 50-um
-    boundary: 49.95 vs 50.55 um). The Fortran runtime caches whichever a
-    profile hits first; here the first (smallest-Re) representative is kept
-    deterministically, and the discrepancy bound is asserted.
+    half of each interval's step, < ~5% relative). The Fortran runtime
+    caches whichever a profile hits first; here the *larger*-Re
+    representative (belonging to interval n+1, whose first slot it is) is
+    kept deterministically. That choice makes the common default radii that
+    sit exactly on a coarse boundary (e.g. the 1M ice default Re = 40 um)
+    match the reference bit-for-bit, and leaves the narrow lower-side sliver
+    with the same <~1% indeterminacy the Fortran itself has. The
+    discrepancy bound is asserted.
 
     Returns
     -------
@@ -149,6 +153,7 @@ def enumerate_re_bins(re_scan=None) -> tuple[np.ndarray, np.ndarray]:
                 raise AssertionError(
                     f"LUT slot {idx} maps to inconsistent Re "
                     f"{mapping[idx]} vs {re_q}")
+            mapping[idx] = max(mapping[idx], re_q)  # keep upper-interval Re
         else:
             mapping[idx] = re_q
     indices = np.array(sorted(mapping), dtype=np.int64)
