@@ -78,6 +78,33 @@ class TemperatureIndexTest(unittest.TestCase):
                                  msg=f"phase={phase} T={t}")
 
 
+class CalcReCrossCheckTest(unittest.TestCase):
+    def test_matches_numpy_port_for_1m_classes(self):
+        # The runtime JAX calc_re_class and the offline NumPy calc_re (the
+        # LUT generator's exact Fortran port) must agree for every 1M class.
+        from jcosp.radar.lut.dsd import calc_re as calc_re_np
+
+        sd = config.HYDRO_CLASSES_1M
+        rng = np.random.default_rng(23)
+        for tp in range(config.N_HYDRO):
+            for _ in range(4):
+                q = float(rng.uniform(0.001, 2.0))     # g/kg
+                rho_a = float(rng.uniform(0.3, 1.3))   # kg/m3
+                ref, _, _ = calc_re_np(
+                    q, 0.0, rho_a, int(sd.dtype[tp]), float(sd.apm[tp]),
+                    float(sd.bpm[tp]), float(sd.rho[tp]), float(sd.p1[tp]),
+                    float(sd.p2[tp]), float(sd.p3[tp]))
+                got = float(optics.calc_re_class(
+                    np.array(q), None, np.array(rho_a),
+                    dtype=int(sd.dtype[tp]), apm=float(sd.apm[tp]),
+                    bpm=float(sd.bpm[tp]), rho=float(sd.rho[tp]),
+                    p1=float(sd.p1[tp]), p2=float(sd.p2[tp]),
+                    p3=float(sd.p3[tp])))
+                self.assertAlmostEqual(
+                    got, ref, delta=abs(ref) * 1e-9 + 1e-12,
+                    msg=f"class {config.HYDRO_NAMES[tp]} q={q} rho_a={rho_a}")
+
+
 class CalcReTest(unittest.TestCase):
     def test_1m_defaults(self):
         # LSL: lognormal defaults rg=6 um, sigma_g: Re = rg*exp(2.5 p3^2).

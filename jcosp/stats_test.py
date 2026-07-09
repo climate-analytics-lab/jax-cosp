@@ -25,18 +25,18 @@ def change_vertical_grid_reference(zfull, zhalf, y, newgrid_bot, newgrid_top,
 
     for k in range(nglev):
         wt = 0.0
-        for l in range(nlev):
-            if oldgrid_bot[l] - newgrid_top[k] >= 0:
+        for lev in range(nlev):
+            if oldgrid_bot[lev] - newgrid_top[k] >= 0:
                 continue
-            if oldgrid_top[l] - newgrid_bot[k] > 0:
-                w = (min(oldgrid_top[l], newgrid_top[k])
-                     - max(oldgrid_bot[l], newgrid_bot[k]))
+            if oldgrid_top[lev] - newgrid_bot[k] > 0:
+                w = (min(oldgrid_top[lev], newgrid_top[k])
+                     - max(oldgrid_bot[lev], newgrid_bot[k]))
                 if w != 0:
                     wt += w
                     for j in range(ncol):
-                        yp = y[l, j]
+                        yp = y[lev, j]
                         if log_units:
-                            yp = 0.0 if y[l, j] == R_UNDEF else 10 ** (y[l, j] / 10)
+                            yp = 0.0 if y[lev, j] == R_UNDEF else 10 ** (y[lev, j] / 10)
                         r[k, j] += w * yp
         if wt > 0:
             r[k, :] /= wt

@@ -11,7 +11,7 @@ import unittest
 import jax
 import numpy as np
 
-from jcosp.subcol.scops import generate_uniforms, scops, scops_from_uniforms
+from jcosp.subcol.scops import scops, scops_from_uniforms
 
 
 def scops_reference(cc, conv, u_init, u_levels, overlap):

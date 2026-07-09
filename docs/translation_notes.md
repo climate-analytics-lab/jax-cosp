@@ -56,6 +56,27 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   hydrometeor-free volumes (which are masked out of the result) so that
   reverse-mode gradients aren't poisoned by `0 · inf` through `where`.
 
+## Offline Mie/DSD library (`jcosp/radar/lut/`)
+
+- **Deduplication.** The Fortran re-runs the Bohren–Huffman Mie integration
+  per LUT entry; for a fixed (class, temperature) the efficiencies on the
+  fixed size grid do not depend on Re, so the generator computes them once per
+  (class, T) and reuses them across Re bins via zeff's Mie-table path.
+  Verified exactly equal to the direct path.
+- **m_ice short-wavelength branch** (λ < 167 µm, unreachable at 94 GHz): the
+  Fortran's search loop `if (alam < wl(i)) continue` is a no-op that would
+  read out of bounds; the intended bracketing (searchsorted) is implemented.
+- **`cr = 10./log(10.)`** is evaluated in float32 as in the Fortran's
+  single-precision literals (a ~1e-8 relative effect the COSP KGO notes).
+- **Rayleigh column always generated** (Fortran with `do_ray=0` would store
+  zeros in `Zr_scaled`); Ze/kr are unaffected.
+- **Fatal `errorMessage` paths raise `ValueError`**, including the calc_Re
+  lognormal missing-Np branch that the Fortran reports non-fatally and then
+  uses an undefined variable.
+- **`gamma` of non-positive integers**: the Fortran returns `1.+300` (301.0,
+  a transcription slip of `1.0d+300`); unreachable for physical inputs, the
+  port raises.
+
 ## Gaseous attenuation (`jcosp/radar/gases.py`)
 
 - **Pressure unit.** The Fortran argument is named `PRES_mb` but the driver

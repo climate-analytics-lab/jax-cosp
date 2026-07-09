@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jcosp import config
 from jcosp.constants import R_UNDEF
 from jcosp.simulator import CloudsatInputs, simulate_cloudsat
 
@@ -15,7 +14,7 @@ _LUT_PATH = importlib.resources.files("jcosp") / "data" / "quickbeam_lut_94GHz_1
 
 
 def idealized_state(nlev=30, nbatch=4, seed=0):
-    """A moist mid-latitude-ish profile with a raining warm cloud."""
+    """Build a moist mid-latitude-ish profile with a raining warm cloud."""
     # TOA-first heights: nlev layers spanning ~20 km down to the surface.
     zhalf_1d = np.linspace(20000.0, 0.0, nlev + 1)
     zhalf = np.repeat(zhalf_1d[1:, None], nbatch, axis=1)  # layer bottoms

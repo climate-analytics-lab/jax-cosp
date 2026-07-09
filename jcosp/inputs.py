@@ -124,10 +124,13 @@ def distribute_hydrometeors(frac_out, prec_frac, pressure, temperature,
     mr[config.I_CVCICE] = jnp.where(cv_mask, in_cloud(mr_ccice, frac_cv)[:, None], 0.0)
 
     # Cloud effective radii ride along on the cloud masks (driver lines
-    # assigning Reff for I_LS*/I_CV* under frac_out).
+    # assigning Reff for I_LS*/I_CV* under frac_out). These are gridbox-mean
+    # (nlev, *batch) fields, broadcast onto subcolumns via [:, None] below.
+    zeros_grid = jnp.zeros(pressure.shape, dtype=pressure.dtype)
+
     def reff_class(i):
         if reff_in is None:
-            return zeros
+            return zeros_grid
         return reff_in[..., i]
 
     reff = {i: zeros for i in range(config.N_HYDRO)}

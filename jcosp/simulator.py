@@ -19,7 +19,8 @@ from typing import NamedTuple
 import jax.numpy as jnp
 
 from jcosp import classify, config, inputs
-from jcosp.radar import gases, optics, quickbeam
+from jcosp.radar import optics, quickbeam
+from jcosp.radar.gases import gases
 from jcosp.stats import change_vertical_grid
 from jcosp.subcol import prec_scops, scops
 
@@ -94,8 +95,8 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
         state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff)
 
     # Gaseous attenuation is per profile (identical across subcolumns).
-    g_vol = gases.gases(state.pressure, state.temperature,
-                        state.specific_humidity, radar.freq)
+    g_vol = gases(state.pressure, state.temperature,
+                  state.specific_humidity, radar.freq)
 
     sd = config.HYDRO_CLASSES[radar.micro_scheme]
     # Optics take g/kg and microns (the driver's unit conversions).

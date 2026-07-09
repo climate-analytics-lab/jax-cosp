@@ -25,7 +25,8 @@ on. Later phases grow the package toward the full COSP instrument suite
 | Quickbeam radar (runtime) | `quickbeam.F90`, `quickbeam_optics.F90` | ported |
 | Gaseous attenuation (Liebe 85) | `quickbeam_optics.F90:gases` | ported |
 | CFAD / vertical regrid / precip flags | `cosp_stats.F90`, `quickbeam.F90` | ported |
-| Warm-rain classification | Mülmenstädt et al. (2020) Methods; `COSP_DIAG_WARMRAIN` | ported |
+| Warm-rain classification (Mülmenstädt et al. 2020) | original implementation | done |
+| CFODD / warm-rain regimes (`COSP_DIAG_WARMRAIN`) | needs MODIS simulator | planned |
 | CALIPSO / ISCCP / MODIS / MISR / PARASOL | — | planned |
 
 ## Design
