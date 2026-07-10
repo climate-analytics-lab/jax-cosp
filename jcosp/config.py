@@ -341,6 +341,68 @@ CALIPSO_T_FALSE_LIQ = 231.15  # "liquid" colder than this is reclassified ice
 # beta_mol / (1 + 1/0.0284) (Bodhaine et al. 1999; lidar_simulator.F90).
 CALIPSO_MOL_DEPOL = 1.0 / (1.0 + 1.0 / 0.0284)
 
+# ---------------------------------------------------------------------------
+# MODIS simulator configuration (appended for the Phase-5 MODIS port).
+# Sources: cosp_modis_interface.F90 (COSP_MODIS_INIT retrieval parameters),
+# modis_simulator.F90 (module parameters; R. Pincus, S. Platnick 2009-2010,
+# D. Swales 2015) and cosp_config.F90 (joint-histogram bin tables; MODIS
+# LWP/IWP/Reff histograms by C. Wall 2024). Copyright (c) 2015, Regents of
+# the University of Colorado, BSD-3-Clause; see LICENSES/.
+# ---------------------------------------------------------------------------
+# Retrieval parameters (COSP_MODIS_INIT). Sizes here are microns, as inside
+# the Fortran module; the retrieved size *output* is metres.
+MODIS_NUM_TRIAL_RES = 15          # Trial radii of the size pseudo-retrieval
+MODIS_MIN_OPTICAL_THICKNESS = 0.3  # Minimum detectable optical thickness
+MODIS_CO2SLICING_PRESSURE_LIMIT = 70000.0  # Pa; lower clouds use ISCCP CTP
+MODIS_CO2SLICING_TAU_LIMIT = 1.0  # Optical depth the CO2-slicing CTP sees
+MODIS_PHASE_TAU_LIMIT = 1.0       # Optical depth the phase detection sees
+MODIS_SIZE_TAU_LIMIT = 2.0        # Declared in COSP_MODIS_INIT; unused by the
+#                                   v2 size retrieval (kept for completeness)
+MODIS_PHASE_DISCRIMINATION_THRESHOLD = 0.7  # Extinction fraction for phase
+MODIS_RE_FILL = -999.0            # Failed-retrieval fill value (um frame)
+MODIS_RE_WATER_MIN = 4.0          # Liquid effective-radius bounds (um)
+MODIS_RE_WATER_MAX = 30.0
+MODIS_RE_ICE_MIN = 5.0            # Ice effective-radius bounds (um)
+MODIS_RE_ICE_MAX = 90.0
+MODIS_HIGH_CLOUD_PRESSURE_LIMIT = 44000.0  # Pa: CTP <= this is "high" cloud
+MODIS_LOW_CLOUD_PRESSURE_LIMIT = 68000.0   # Pa: CTP >  this is "low" cloud
+# Retrieved-phase codes.
+MODIS_PHASE_NONE = 0
+MODIS_PHASE_LIQUID = 1
+MODIS_PHASE_ICE = 2
+MODIS_PHASE_UNDETERMINED = 3
+# modis_simulator.F90 module parameters.
+MODIS_ICE_DENSITY = 0.93          # Ice density relative to liquid (=1)
+MODIS_LWP_CONVERSION = 2.0 / 3.0 * 1000.0  # W = (2/3) rho_liq re tau (MKS)
+
+# Joint-histogram bins (cosp_config.F90). The tau axis is the COSP v2 default
+# (numMODISTauBins = ntau, set in COSP_INIT); the v1.4 6-bin variant that
+# drops the [0, 0.3) bin is not ported.
+NUM_MODIS_TAU_BINS = 7
+MODIS_HIST_TAU = np.array([0.0, 0.3, 1.3, 3.6, 9.4, 23.0, 60.0, 10000.0])
+MODIS_HIST_TAU_CENTERS = np.array([0.15, 0.80, 2.45, 6.5, 16.2, 41.5, 100.0])
+# Cloud-top-pressure bins (Pa; modis_histPres = 100 * pres_binBounds [hPa]).
+# Ascending pressure = TOA-first; cosp.F90 flips the CTP axis of the joint
+# histograms to surface-first when storing output (reproduced by the driver).
+NUM_MODIS_PRES_BINS = 7
+MODIS_HIST_PRES = 100.0 * np.array(
+    [0.0, 180.0, 310.0, 440.0, 560.0, 680.0, 800.0, 10000.0])
+MODIS_HIST_PRES_CENTERS = np.array(
+    [90000.0, 74000.0, 62000.0, 50000.0, 37500.0, 24500.0, 9000.0])
+# Particle-size bins (m), Pincus et al. 2023 (doi:10.5194/essd-15-2483-2023).
+NUM_MODIS_REFF_LIQ_BINS = 8
+MODIS_HIST_REFF_LIQ = np.array(
+    [0.0, 4.0e-6, 8e-6, 1.0e-5, 1.25e-5, 1.5e-5, 2.0e-5, 3.0e-5, 1.0e-2])
+NUM_MODIS_REFF_ICE_BINS = 8
+MODIS_HIST_REFF_ICE = np.array(
+    [0.0, 5.0e-6, 1.0e-5, 2.0e-5, 3.0e-5, 4.0e-5, 5.0e-5, 6.0e-5, 1.0e-2])
+# Water-path bins (kg m-2).
+NUM_MODIS_LWP_BINS = 7
+MODIS_HIST_LWP = np.array([0.0, 0.01, 0.03, 0.06, 0.10, 0.15, 0.25, 20.0])
+NUM_MODIS_IWP_BINS = 7
+MODIS_HIST_IWP = np.array([0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 1.00, 20.0])
+
+
 # --- lidar_optics (cosp_optics.F90) constants ---
 # The lidar optics use COSP's own physical constants (cosp_constants.F90),
 # which differ slightly from the radar-path values above (RD = 287.0); they

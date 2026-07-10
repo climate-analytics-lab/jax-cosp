@@ -18,7 +18,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import classify, config, inputs
+from jcosp import classify, config, inputs, modis
 from jcosp.radar import optics, quickbeam
 from jcosp.radar.gases import gases
 from jcosp.stats import change_vertical_grid
@@ -139,3 +139,70 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
         dbze=dbze, ze_non=ze_non, cfad_ze=column.cfad_ze,
         precip_cover=column.precip_cover, pia=column.pia,
         warm_rain=warm_rain, frac_out=frac_out, prec_frac=prec_frac)
+
+
+class CloudsatModisOutputs(NamedTuple):
+    """Joint CloudSat + MODIS diagnostics (Phase-5 scope)."""
+
+    cloudsat: CloudsatOutputs
+    modis: modis.ModisOutputs
+    warmrain: modis.WarmRainDiagnostics  # Michibata et al. (2019) CFODD/regimes
+
+
+def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
+                            dtau_s, dtau_c, pressure_half,
+                            key=None, ncolumns: int = 100, overlap: int = 3,
+                            frac_out=None, sunlit=None, isccp_ctp=None,
+                            radar: config.RadarConfig = config.CLOUDSAT_RADAR,
+                            ) -> CloudsatModisOutputs:
+    """Run CloudSat + MODIS + CFODD/warm-rain on one SCOPS realization.
+
+    ``simulate_cloudsat`` is unchanged; this composes it with the MODIS
+    simulator (which needs the extra host fields ``dtau_s``/``dtau_c`` —
+    gridbox-mean 0.67-um layer optical depths of stratiform / convective
+    cloud — and ``pressure_half``, the (nlev+1, *batch) layer-edge
+    pressures) and with ``jcosp.modis.cfodd.diag_warmrain`` driven exactly
+    as cosp.F90's default ``use_vgrid`` path: temperature and the SCOPS map
+    regridded linearly, dBZe log-averaged, onto the 40 x 480 m statistical
+    grid whose upper-interface heights serve as ``zlev``.
+
+    ``sunlit``/``isccp_ctp`` are passed through to the MODIS column stage
+    (see ``jcosp.modis.simulate_modis``).
+    """
+    cs = simulate_cloudsat(state, lut, key=key, ncolumns=ncolumns,
+                           overlap=overlap, frac_out=frac_out, radar=radar)
+
+    # The MODIS input build consumes the same subcolumn hydrometeors the
+    # radar optics saw (recomputed here; distribute_hydrometeors is cheap
+    # and deterministic given the SCOPS/PREC_SCOPS maps).
+    hyd = inputs.distribute_hydrometeors(
+        cs.frac_out, cs.prec_frac, state.pressure, state.temperature,
+        state.mr_lsliq, state.mr_lsice, state.mr_ccliq, state.mr_ccice,
+        state.fl_lsrain, state.fl_lssnow, state.fl_lsgrpl,
+        state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff)
+
+    mod = modis.simulate_modis(cs.frac_out, hyd.mr_hydro, hyd.reff,
+                               dtau_s, dtau_c, pressure_half,
+                               sunlit=sunlit, isccp_ctp=isccp_ctp)
+
+    # CFODD / warm-rain inputs on the CloudSat statistical grid (cosp.F90,
+    # Lcloudsat_modis_wr with use_vgrid=.true.).
+    temp_r = change_vertical_grid(
+        state.zfull, state.zhalf, state.temperature[:, None],
+        config.VGRID_ZL, config.VGRID_ZU)[:, 0]
+    dbze_r = change_vertical_grid(state.zfull, state.zhalf, cs.dbze,
+                                  config.VGRID_ZL, config.VGRID_ZU,
+                                  log_units=True)
+    frac_r = change_vertical_grid(
+        state.zfull, state.zhalf,
+        cs.frac_out.astype(state.temperature.dtype),
+        config.VGRID_ZL, config.VGRID_ZU)
+
+    col = mod.column
+    wr = modis.diag_warmrain(
+        temp_r, jnp.asarray(config.VGRID_ZU, state.temperature.dtype),
+        lwp=col.lwp, liqcot=col.tau_liquid, liqreff=col.size_liquid,
+        iwp=col.iwp, icecot=col.tau_ice, icereff=col.size_ice,
+        frac_out=frac_r, dbze=dbze_r)
+
+    return CloudsatModisOutputs(cloudsat=cs, modis=mod, warmrain=wr)

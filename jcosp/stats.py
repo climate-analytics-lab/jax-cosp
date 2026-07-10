@@ -37,6 +37,37 @@ def hist1d(var, bins):
     return jnp.where(any_ground[None], R_UNDEF, counts)
 
 
+def hist2d(var1, var2, bins1, bins2):
+    """Joint histogram counts over the sample axis (cosp_stats.F90:hist2D).
+
+    Parameters
+    ----------
+    var1, var2 : (n, *batch)
+        Paired samples (one joint histogram per batch element, counting over
+        axis 0 — e.g. subcolumns, or flattened subcolumn x level cells).
+    bins1 : (nbin1+1,), bins2 : (nbin2+1,)
+        Ascending bin boundaries for each variable.
+
+    Returns
+    -------
+    (nbin1, nbin2, *batch) counts. A sample lands in bin (i, j) when
+    ``bins1[i] <= var1 < bins1[i+1]`` and ``bins2[j] <= var2 < bins2[j+1]``;
+    out-of-range samples (including R_UNDEF fills) are simply not counted.
+    Unlike ``hist1d``, the Fortran hist2D applies no R_GROUND poisoning.
+    """
+    bins1 = jnp.asarray(bins1)
+    bins2 = jnp.asarray(bins2)
+    shape = (-1, 1) + (1,) * (var1.ndim - 1)
+    m1 = ((var1[None] >= bins1[:-1].reshape(shape))
+          & (var1[None] < bins1[1:].reshape(shape)))     # (nbin1, n, *batch)
+    m2 = ((var2[None] >= bins2[:-1].reshape(shape))
+          & (var2[None] < bins2[1:].reshape(shape)))     # (nbin2, n, *batch)
+    # Contract over the sample axis without materializing the
+    # (nbin1, nbin2, n, *batch) intermediate.
+    return jnp.einsum("in...,jn...->ij...", m1.astype(var1.dtype),
+                      m2.astype(var1.dtype))
+
+
 def change_vertical_grid(zfull, zhalf, y, newgrid_bot, newgrid_top,
                          log_units: bool = False):
     """Layer-thickness-weighted regrid onto a fixed height grid.

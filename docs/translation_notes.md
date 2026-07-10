@@ -184,5 +184,112 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   - "Nonzero cloud condensate" thresholds default to exactly 0 and are
     exposed as parameters.
 - COSP's own `COSP_DIAG_WARMRAIN` (Michibata et al. 2019 CFODD/regime
-  diagnostics) additionally requires MODIS-simulator retrievals and will be
-  ported together with the MODIS simulator (Phase 5).
+  diagnostics) is ported in `jcosp/modis/cfodd.py` (see below); this module
+  remains the independent Mülmenstädt-style classification.
+
+## MODIS input optics (`jcosp/modis/optics.py`)
+
+- Ports of `cosp_optics.F90` (`cosp_simulator_optics`,
+  `MODIS_OPTICS_PARTITION`, `modis_optics`) and the `modis_simulator.F90`
+  Collection-6 near-IR fits (`get_g_nir`/`get_ssa_nir`). The Collection-5
+  `get_g_nir_old`/`get_ssa_nir_old` fits are dead code in COSP v2 and are
+  not ported.
+- `build_modis_optics` mirrors the reference driver's MODIS block
+  (cosp2_test.F90): only the cloud liquid/ice classes (LS + CV) count as
+  cloud for MODIS, and the host's gridbox-mean `dtau_s`/`dtau_c` 0.67-um
+  layer optical depths are painted onto subcolumns through the SCOPS map.
+- **Gradient hardening.** The mixed-phase partition clamps the particle
+  sizes and the extinction-weight denominator away from zero inside the
+  where-masked branch (cells with a missing phase are masked out); the
+  Fortran would produce Inf/NaN there only for inconsistent inputs
+  (condensate without a size).
+
+## MODIS simulator (`jcosp/modis/simulator.py`)
+
+- Port of `modis_simulator.F90` `modis_subcolumn` + `modis_column`,
+  including the two-stream (delta-Eddington, diffuse beam: the Fortran's
+  `beam` is a compile-time constant 2, so the collimated branch is not
+  ported), the adding recursion, the CO2-slicing CTP integration and the
+  15-trial-radius size pseudo-retrieval.
+- **ISCCP CTP substitution.** The Fortran replaces the CO2-slicing CTP of
+  clouds below 700 hPa with the ISCCP simulator's `boxptop`. ISCCP is not
+  ported yet, so `isccp_ctp` is an *optional* argument of
+  `modis_subcolumn`/`simulate_modis`; when absent the CO2-slicing value is
+  kept everywhere (deviation; low-cloud CTP statistics will shift slightly
+  relative to COSP until ISCCP lands).
+- **Faithfully kept call-site quirk:** `modis_subcolumn` passes an
+  (nLevels+1)-element `[0, tau]` array into an nLevels-sized dummy of
+  `cloud_top_pressure`, so the *bottom layer never contributes* to the CTP
+  integration; a cloud confined to the bottom layer retrieves CTP = 0 (and,
+  being <= 700 hPa, is *not* replaced by the ISCCP value). Reproduced and
+  tested.
+- **Faithfully kept quirks:** an exact zero of `predicted - observed`
+  reflectance makes `interpolate_to_min`'s bracketing product 0 (not < 0),
+  so the retrieval reports the fill size; the mean CTP divides by
+  `max(1, count)` so cloud-free (but sunlit) points report 0, not R_UNDEF;
+  the delta-Eddington reflectance is genuinely negative for strongly
+  absorbing inputs (observed and predicted values compare in the same
+  frame, so the size retrieval is unaffected).
+- `compute_toa_reflectance` runs the adding recursion over *all* layers
+  with clear layers forced to the identity (R, T) = (0, 1) instead of
+  packing the cloudy ones (algebraically identical; JAX needs static
+  shapes). `beta` is computed as -(rk - g1)/(rk + g1); the Fortran's
+  `-r5/r4` carries a common (1 - (rk xmu)^2) factor that cancels
+  algebraically and would be 0/0 at rk = 1/xmu. `sqrt(g1^2 - g2^2)` is
+  clamped inside the non-conservative branch (selected away by `where` at
+  conservative w0) for gradient safety.
+- Column stage: joint histograms via the `hist2d` port; cosp.F90's
+  surface-first reordering of the CTP histogram axis is applied by the
+  `simulate_modis` driver (the `modis_column` function itself returns the
+  Fortran-internal ascending-pressure order). Night points: all column
+  outputs R_UNDEF except the two tau-vs-Reff histograms, which cosp.F90
+  explicitly zero-fills (the LWP/IWP-vs-Reff histograms are left
+  *uninitialized* by the Fortran for night points; we use R_UNDEF).
+- Only the COSP v2 default tau-bin axis (7 bins including [0, 0.3)) is
+  ported; the v1.4 6-bin compatibility variant is not.
+- **Differentiability.** Retrieved tau, CTP, reflectances and (piecewise)
+  particle size are differentiable w.r.t. the optical inputs; the size
+  retrieval's trial-point selection (argmin + bracket choice) makes size a
+  piecewise-smooth function with jumps only where the selected bracket
+  changes. Cloud detection and phase are hard thresholds (step functions),
+  as in the CloudSat flags. Tested via `jax.grad` finiteness.
+
+## CFODD / warm-rain occurrence (`jcosp/modis/cfodd.py`)
+
+- Port of `cosp_stats.F90:COSP_DIAG_WARMRAIN` ((c) 2018 RIAM Kyushu
+  University, T. Michibata; Michibata et al. 2019 GMD). Constants
+  (`CFODD_*`, `WR_NREGIME`, `CWP_THRESHOLD`, `COT_THRESHOLD`) were already
+  in `jcosp.config`.
+- **Index mapping.** The Fortran scans `k = Nlevels, 1, -1` over TOA-first
+  data (surface upward); on the axis-0 TOA-first arrays this is index
+  nlev-1 down to 0, so cloud top has the *smaller* index (kctop <= kcbtm).
+  The per-column level scans (bottom/top detection, SLWC check, ICOD
+  profile) are vectorized with argmax-based first/last-True reductions and
+  masked reductions over the level axis; proven against a loop
+  transliteration (`cfodd_test.py`).
+- The `lwp == R_UNDEF` guard keys the R_UNDEF outputs exactly as the
+  Fortran initialization loop: it fires both for non-sunlit points and for
+  sunlit points where MODIS retrieved no liquid cloud at all.
+- **Faithfully kept quirk:** the CFODD histogram is accumulated over *all*
+  (subcolumn, level) cells of a screened-in gridpoint, so cells with
+  dBZe >= -30 in subcolumns that failed the SLWC checks still land in the
+  first ICOD bin (their ICOD stays at the 0 initialization).
+- The unused `liqcfrc`/`icecfrc` arguments of the Fortran signature are
+  omitted.
+- `ratio**(5/3)` in the ICOD profile is clip-guarded at 0 and the cloud
+  geometric thickness clamped away from zero inside the masked branch
+  (single-level clouds use the bottom-level branch, as in the Fortran).
+- Counting diagnostics (histograms, occurrence counts) carry no useful
+  gradients; treat CFODD outputs as forward diagnostics.
+- Driven by `jcosp.simulator.simulate_cloudsat_modis` exactly as cosp.F90's
+  default `use_vgrid=.true.` path: temperature and the SCOPS map regridded
+  linearly and dBZe log-averaged onto the 40 x 480 m grid, with
+  `zlev = vgrid_zu` (the gates' upper interfaces). The model-level
+  (`use_vgrid=.false.`) branch is not wired into the driver but
+  `diag_warmrain` accepts model-level inputs directly.
+
+## hist2d (`jcosp/stats.py`)
+
+- Port of `cosp_stats.F90:hist2D`. Unlike `hist1D`, the Fortran applies no
+  R_GROUND poisoning here; out-of-range samples (including R_UNDEF/-999
+  fills) are simply not counted. Reproduced as-is.

@@ -29,7 +29,12 @@ from jcosp import config
 
 
 class WarmRainFlags(NamedTuple):
-    """Per-gridbox warm-rain occurrence fractions (over subcolumns)."""
+    """Per-gridbox warm-rain occurrence fractions (over subcolumns).
+
+    The regimes here are *exclusive* (drizzle means -15 < max Ze <= 0 dBZe).
+    Mülmenstädt et al. (2020) count raining columns as also drizzling
+    (inclusive); recover that convention with ``drizzle + rain``.
+    """
 
     warm_rain: jnp.ndarray      # fraction of subcolumns: warm & max Ze > 0 dBZe
     cold_rain: jnp.ndarray      # cold & max Ze > 0 dBZe

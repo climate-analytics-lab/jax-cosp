@@ -95,6 +95,46 @@ class ChangeVerticalGridTest(unittest.TestCase):
         np.testing.assert_allclose(out, y[::-1], atol=1e-12)
 
 
+def hist2d_reference(var1, var2, bin1, bin2):
+    """Loop transliteration of cosp_stats.F90:hist2D (single batch element)."""
+    nbin1, nbin2 = len(bin1) - 1, len(bin2) - 1
+    joint = np.zeros((nbin1, nbin2))
+    for ij in range(nbin1):
+        for ik in range(nbin2):
+            joint[ij, ik] = np.count_nonzero(
+                (var1 >= bin1[ij]) & (var1 < bin1[ij + 1])
+                & (var2 >= bin2[ik]) & (var2 < bin2[ik + 1]))
+    return joint
+
+
+class Hist2dTest(unittest.TestCase):
+    def test_matches_fortran_transliteration(self):
+        rng = np.random.default_rng(7)
+        n, nb = 200, 3
+        bin1 = np.array([-30.0, -20.0, -10.0, 0.0, 10.0, 20.0])
+        bin2 = np.array([0.0, 2.0, 4.0, 8.0, 60.0])
+        var1 = rng.uniform(-40, 30, (n, nb))
+        var2 = rng.uniform(-1, 70, (n, nb))
+        # Sprinkle sentinel fills, which must simply not be counted.
+        var1[rng.uniform(size=var1.shape) < 0.1] = R_UNDEF
+        var2[rng.uniform(size=var2.shape) < 0.1] = -999.0
+        out = np.asarray(stats.hist2d(var1, var2, bin1, bin2))
+        for b in range(nb):
+            np.testing.assert_array_equal(
+                out[:, :, b], hist2d_reference(var1[:, b], var2[:, b],
+                                               bin1, bin2))
+
+    def test_total_count(self):
+        # Every in-range sample lands in exactly one joint bin.
+        rng = np.random.default_rng(8)
+        var1 = rng.uniform(0.0, 1.0, (50,))
+        var2 = rng.uniform(0.0, 1.0, (50,))
+        out = np.asarray(stats.hist2d(var1, var2,
+                                      np.linspace(0, 1, 5),
+                                      np.linspace(0, 1, 4)))
+        self.assertEqual(out.sum(), 50)
+
+
 class Hist1dTest(unittest.TestCase):
     def test_counts(self):
         var = np.array([[-60.0, -12.0, 3.0, 100.0]]).T  # (ncol=4, batch=1)

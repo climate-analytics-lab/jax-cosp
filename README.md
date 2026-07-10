@@ -13,10 +13,15 @@ sampling and the Quickbeam 94-GHz reflectivity simulator — which is what the
 on. Phase 4 added the **CALIPSO lidar path** (`jcosp.lidar.simulate_calipso`):
 532-nm optics, total + perpendicular attenuated backscatter, and the
 GOCCP-style scattering-ratio CFAD, cloud-fraction and thermodynamic-phase
-diagnostics. Later phases grow the package toward the full COSP instrument
-suite (ISCCP, MODIS, MISR, PARASOL).
+diagnostics. Phase 5 added the **MODIS simulator**
+(`jcosp.modis.simulate_modis`: per-subcolumn cloud mask / CTP / optical
+thickness / phase / particle-size retrievals, column means and joint
+histograms) and the **CFODD + warm-rain-occurrence diagnostics** of
+Michibata et al. (2019) that join MODIS retrievals with the CloudSat radar
+(`jcosp.simulator.simulate_cloudsat_modis`). Later phases grow the package
+toward the full COSP instrument suite (ISCCP, MISR, PARASOL).
 
-## Status: alpha (Phases 0–4 of the translation plan)
+## Status: alpha (Phases 0–5 of the translation plan)
 
 | Component | COSP v2 origin | Status |
 | --- | --- | --- |
@@ -29,14 +34,17 @@ suite (ISCCP, MODIS, MISR, PARASOL).
 | Gaseous attenuation (Liebe 85) | `quickbeam_optics.F90:gases` | ported |
 | CFAD / vertical regrid / precip flags | `cosp_stats.F90`, `quickbeam.F90` | ported |
 | Warm-rain classification (Mülmenstädt et al. 2020) | original implementation | done |
-| CFODD / warm-rain regimes (`COSP_DIAG_WARMRAIN`) | needs MODIS simulator | planned |
+| CFODD / warm-rain regimes (`COSP_DIAG_WARMRAIN`) | `cosp_stats.F90` | ported (vgrid path) |
+| MODIS input optics (tau merge, phase partition, 3.7-µm g/w0) | `cosp_optics.F90`, driver MODIS block | ported |
+| MODIS subcolumn retrievals (mask, CTP, tau, phase, size) | `modis_simulator.F90` | ported (ISCCP CTP substitution pending ISCCP) |
+| MODIS column means + joint histograms (tau/CTP, tau/Reff, LWP-IWP/Reff) | `modis_simulator.F90`, `cosp_stats.F90:hist2D` | ported |
 | CALIPSO lidar optics (532 nm, sphere + non-sphere ice) | `cosp_optics.F90:lidar_optics` | ported |
 | CALIPSO ATB + perpendicular channel | `actsim/lidar_simulator.F90` | ported |
 | CALIPSO SR / CFAD / cloud + phase fractions (GOCCP) | `lidar_simulator.F90:COSP_CLDFRAC` | ported (vgrid path) |
 | Lidar-only cloud / radar-lidar TCC | `cosp_stats.F90:COSP_LIDAR_ONLY_CLOUD` | ported |
 | CALIPSO OPAQ diagnostics (`COSP_OPAQ`) | `lidar_simulator.F90` | planned |
 | ATLID / ground lidar variants | `lidar_simulator.F90` | planned |
-| ISCCP / MODIS / MISR / PARASOL | — | planned |
+| ISCCP / MISR / PARASOL | — | planned |
 
 ## Design
 

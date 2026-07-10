@@ -54,6 +54,45 @@ This is the quantity comparable to the Mülmenstädt et al. (2015)
 CloudSat/CALIPSO climatology and used as the aerosol–cloud-interaction
 constraint in Mülmenstädt et al. (2020).
 
+## MODIS retrievals and CFODD / warm-rain occurrence
+
+The MODIS path needs two extra host fields beyond `CloudsatInputs`: the
+gridbox-mean 0.67-µm layer optical depths of stratiform and convective
+cloud (`dtau_s`, `dtau_c`, `(nlev, *batch)`), and the layer-edge pressures
+(`phalf`, `(nlev+1, *batch)`, TOA-first). The combined driver runs the
+radar, the MODIS retrievals and the Michibata et al. (2019) joint
+diagnostics on one SCOPS realization:
+
+```python
+from jcosp.simulator import simulate_cloudsat_modis
+
+out = simulate_cloudsat_modis(
+    state, lut, dtau_s, dtau_c, phalf,
+    key=jax.random.PRNGKey(0), ncolumns=100,
+    sunlit=sunlit,       # (*batch) 1 day / 0 night; dark points -> R_UNDEF
+)
+
+col = out.modis.column
+col.cf_total, col.cf_liquid, col.cf_ice   # cloud fractions (%)
+col.tau_liquid, col.size_liquid, col.lwp  # in-cloud means (SI; sizes in m)
+col.tau_vs_ctp                            # (7, 7, *batch) joint histogram (%)
+col.lwp_vs_reff_liq, col.iwp_vs_reff_ice  # water-path/size histograms (%)
+
+out.warmrain.wr_occfreq_ntotal  # (3, *batch) non-precip/drizzle/rain counts
+out.warmrain.cfodd_ntotal       # (25, 30, 3, *batch) CFODD samples
+                                # (dBZe x in-cloud optical depth x Reff class)
+```
+
+MODIS can also run standalone on any subcolumn realization
+(`jcosp.modis.simulate_modis(frac_out, mr_hydro, reff, dtau_s, dtau_c,
+phalf, ...)`, with `mr_hydro`/`reff` from
+`jcosp.inputs.distribute_hydrometeors`). Pass `isccp_ctp` when an ISCCP
+simulator is available: COSP replaces the CO2-slicing cloud-top pressure of
+clouds below 700 hPa with the ISCCP value; without it the CO2-slicing CTP
+is kept (see docs/translation_notes.md). Cloud effective radii
+(`state.reff`) should be provided for meaningful MODIS optics — the size
+retrieval reads the 3.7-µm optical properties computed from them.
+
 ## From JAX-GCM
 
 The `jcm` hook is the `CloudsatCosp` physics term (jax-gcm repository,
@@ -79,7 +118,11 @@ effective radii. The subcolumn sampling itself is stochastic forward
 when differentiating, or use ensemble/gradient-free calibration across keys.
 The hard dBZe thresholds in the CloudSat/warm-rain classifications are step
 functions; a smooth-threshold variant is a planned research spike (plan
-§5.1-5.2).
+§5.1-5.2). The MODIS retrievals are differentiable w.r.t. the optical
+inputs (tau, CTP, reflectances; particle size piecewise, through the
+trial-radius bracketing), while the cloud/phase masks and the CFODD /
+occurrence *counts* are step functions — treat those as forward
+diagnostics.
 
 ## Regenerating the radar LUT
 
