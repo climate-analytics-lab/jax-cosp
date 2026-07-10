@@ -69,24 +69,27 @@ def compute_toa_reflectance_reference(tau, g, w0):
                                      [p[1] for p in pairs])[0]
 
 
-def cloud_top_pressure_reference(tau, phalf, tau_limit):
-    """Transliteration of cloud_top_pressure *as called*.
+def cloud_top_pressure_reference(tau, phalf, tau_limit, legacy=False):
+    """Transliteration of cloud_top_pressure.
 
-    The (nlev+1)-long [0, tau] array is truncated to nlev entries by the
-    dummy argument, dropping the bottom layer from the integration.
+    With ``legacy`` the Fortran call-site truncation is reproduced: the
+    (nlev+1)-long [0, tau] array is cut to nlev entries by the dummy
+    argument, dropping the bottom layer from the integration (the FIXED
+    UPSTREAM BUG; the default integrates every layer).
     """
     nlev = len(tau)
-    tauinc = np.concatenate([[0.0], tau])[:nlev]
-    p = phalf[:nlev]
+    n_used = nlev - 1 if legacy else nlev
     tot, prod = 0.0, 0.0
-    for i in range(1, nlev):  # Fortran i = 2, nLevels
-        if tot + tauinc[i] > tau_limit:
+    for layer in range(n_used):  # layer between phalf[layer], phalf[layer+1]
+        inc = tau[layer]
+        p_lo, p_hi = phalf[layer], phalf[layer + 1]
+        if tot + inc > tau_limit:
             dx = tau_limit - tot
             tot += dx
-            prod += p[i - 1] * dx + (p[i] - p[i - 1]) * dx**2 / (2 * tauinc[i])
+            prod += p_lo * dx + (p_hi - p_lo) * dx**2 / (2 * inc)
         else:
-            tot += tauinc[i]
-            prod += tauinc[i] * (p[i] + p[i - 1]) / 2
+            tot += inc
+            prod += inc * (p_hi + p_lo) / 2
         if tot >= tau_limit:
             break
     return prod / tot if tot > 0 else 0.0
@@ -218,7 +221,8 @@ def modis_column_reference(phase, ctp, tau, size):
         "tau_ice_log": mean(np.log10(np.abs(tau)), imask, n_ice),
         "size_ice": mean(size, imask, n_ice),
         "iwp": mean(lwp_c * 0.93 * size * tau, imask, n_ice),
-        "ctp_mean": ctp[cmask].sum() / max(1.0, n_tot),
+        # FIXED UPSTREAM BUG: mean CTP is undefined (not 0) when cloud-free.
+        "ctp_mean": mean(ctp, cmask, n_tot),
         "cf_total": 100.0 * n_tot / ncol, "cf_liquid": 100.0 * n_wat / ncol,
         "cf_ice": 100.0 * n_ice / ncol, "cf_high": 100.0 * n_hi / ncol,
         "cf_mid": 100.0 * n_mid / ncol, "cf_low": 100.0 * n_lo / ncol,
@@ -323,17 +327,21 @@ class ProfileScanTest(unittest.TestCase):
                 out[c], cloud_top_pressure_reference(tau[:, c], phalf, 1.0),
                 rtol=1e-12, err_msg=f"column {c}")
 
-    def test_bottom_layer_never_contributes(self):
-        # The call-site truncation drops the lowest layer: a cloud confined
-        # there yields CTP = 0 (faithful Fortran quirk).
+    def test_bottom_layer_contributes_after_fix(self):
+        # FIXED UPSTREAM BUG: the Fortran call-site truncation drops the
+        # lowest layer, so a cloud confined there yields CTP = 0; the fixed
+        # integral places the cloud top inside the bottom layer.
         nlev = 6
         phalf = np.linspace(10000.0, 100000.0, nlev + 1)
         tau = np.zeros((nlev, 1))
         tau[-1, 0] = 5.0
-        out = np.asarray(msim.cloud_top_pressure(tau, phalf, 1.0))
-        self.assertEqual(out[0], 0.0)
-        self.assertEqual(cloud_top_pressure_reference(tau[:, 0], phalf, 1.0),
-                         0.0)
+        out = float(np.asarray(msim.cloud_top_pressure(tau, phalf, 1.0))[0])
+        self.assertGreater(out, phalf[-2])
+        self.assertLess(out, phalf[-1])
+        # The documented difference from the Fortran (legacy) form:
+        self.assertEqual(
+            cloud_top_pressure_reference(tau[:, 0], phalf, 1.0, legacy=True),
+            0.0)
 
     def test_weight_by_extinction_matches(self):
         rng = np.random.default_rng(14)
@@ -369,14 +377,16 @@ class InterpolateToMinTest(unittest.TestCase):
                                             jnp.asarray(0.9 - 0.02 * 17.3)))
         np.testing.assert_allclose(out, 17.3, rtol=1e-12)
 
-    def test_exact_node_hit_returns_fill(self):
-        # Faithful Fortran quirk: an exactly-zero diff makes the bracketing
-        # product 0 (not < 0), so the retrieval reports the fill value.
+    def test_exact_node_hit_returns_node(self):
+        # FIXED UPSTREAM BUG: the Fortran's strictly-negative bracket test
+        # turns an exactly-matched trial reflectance into the fill value;
+        # the fixed boundary case returns the matching trial radius.
         x = np.linspace(4.0, 30.0, 15)
         y = 1.0 / x
         out = float(msim.interpolate_to_min(x, jnp.asarray(y),
                                             jnp.asarray(1.0 / x[7])))
-        self.assertEqual(out, config.MODIS_RE_FILL)
+        np.testing.assert_allclose(out, x[7], rtol=1e-12)
+        # The documented difference from the Fortran reference:
         self.assertEqual(interpolate_to_min_reference(x, y, 1.0 / x[7]),
                          config.MODIS_RE_FILL)
 

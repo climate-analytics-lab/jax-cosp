@@ -22,12 +22,15 @@ i.e. from the surface-most level upward; on our axis-0 TOA-first arrays that
 is index nlev-1 down to 0, so the cloud *top* has the smaller level index
 (kctop <= kcbtm). Verified against a loop transliteration in cfodd_test.py.
 
+FIXED UPSTREAM BUG (docs/translation_notes.md): the Fortran accumulates the
+CFODD histogram over *all* (subcolumn, level) cells of a screened-in
+gridpoint, so a cell with dBZe >= -30 in a subcolumn that failed the SLWC
+checks lands in the first ICOD bin (its ICOD stays at the 0
+initialization). Here only in-cloud cells of SLWC-passing subcolumns are
+counted.
+
 Faithfully kept Fortran quirks:
 
-* The CFODD histogram is accumulated over *all* (subcolumn, level) cells of
-  a screened-in gridpoint, so a cell with dBZe >= -30 in a subcolumn that
-  failed the SLWC checks still lands in the first ICOD bin (its ICOD stays
-  at the 0 initialization).
 * ``liqcfrc``/``icecfrc`` (MODIS cloud fractions) are inputs in the Fortran
   signature but never used; they are omitted here.
 """
@@ -173,7 +176,14 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     # stratified by Reff class; zero for screened-out points (the Fortran
     # never calls hist2D for them).
     # ------------------------------------------------------------------
-    dbze_flat = dbze.reshape((-1,) + dbze.shape[2:])
+    # FIXED UPSTREAM BUG (docs/translation_notes.md): the Fortran histograms
+    # every subcolumn/level cell, so detectable echoes (dBZe >= -30) in
+    # subcolumns that FAILED the SLWC screening still land in the first ICOD
+    # bin (their ICOD stays 0). Only in-cloud cells of SLWC-passing
+    # subcolumns are CFODD samples; everything else is pushed out of range.
+    cell_ok = in_cloud & col_ok[None]
+    dbze_hist = jnp.where(cell_ok, dbze, -999.0)
+    dbze_flat = dbze_hist.reshape((-1,) + dbze.shape[2:])
     icod_flat = icod.reshape((-1,) + icod.shape[2:])
     hist = stats.hist2d(dbze_flat, icod_flat,
                         jnp.asarray(config.CFODD_HIST_DBZE, dtype),

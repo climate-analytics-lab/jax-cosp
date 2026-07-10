@@ -35,12 +35,16 @@ def _attenuation_to_volume(kr_vol, hgt_km, weight: float, two_start: bool):
     a0 = weight * kr_vol[:1] * dh[:1]
     if not two_start:
         return jnp.concatenate([a0, a0 + jnp.cumsum(trap, axis=0)], axis=0)
+    # Legacy (reference-Fortran) behaviour only: gate 2's value ignores gate
+    # 1's accumulation and uses the layer spacing BELOW it. See the
+    # fixed-upstream-bug note in quickbeam_subcolumn.
     a1 = weight * kr_vol[1:2] * dh[1:2]
     return jnp.concatenate([a0, a1, a1 + jnp.cumsum(trap[1:], axis=0)], axis=0)
 
 
 def quickbeam_subcolumn(z_vol, kr_vol, g_vol, hgt_km,
-                        radar_at_layer_one: bool = True):
+                        radar_at_layer_one: bool = True,
+                        legacy_gate2: bool = False):
     """Attenuated and non-attenuated effective reflectivity (dBZe).
 
     Parameters
@@ -51,13 +55,23 @@ def quickbeam_subcolumn(z_vol, kr_vol, g_vol, hgt_km,
     hgt_km : (nlev, ...) layer mid-point heights (km), TOA-first.
     radar_at_layer_one : True for a radar at the index-0 end of the level
         axis (spaceborne for TOA-first data).
+    legacy_gate2 : bool
+        Reproduce a FIXED UPSTREAM BUG (docs/translation_notes.md): in the
+        reference's increasing-gate branch, the hydrometeor attenuation of
+        gate 2 ignores gate 1's contribution and uses the layer spacing
+        below it (``a(2) = kr(2)*(h(2)-h(3))``), inconsistently with the
+        gas sum, the decreasing-gate branch, and the trapezoid recurrence
+        used everywhere else. The corrected default accumulates gate 2 as
+        ``a(1) + (kr(1)+kr(2))*(h(1)-h(2))``. For a spaceborne radar the
+        difference is confined to near-TOA gates and is usually negligible.
 
     Returns
     -------
     dbze, ze_non : (nlev, ...), R_UNDEF where the volume has no reflectivity.
     """
     if radar_at_layer_one:
-        a_to_vol = _attenuation_to_volume(kr_vol, hgt_km, 1.0, two_start=True)
+        a_to_vol = _attenuation_to_volume(kr_vol, hgt_km, 1.0,
+                                          two_start=legacy_gate2)
         g_to_vol = _attenuation_to_volume(g_vol, hgt_km, 0.5, two_start=False)
     else:
         # The decreasing-gate branch is the increasing-gate recurrence on

@@ -426,3 +426,42 @@ LIDAR_POLPART_ICE_SPHERE = np.array(
     [-1.0176e-8, 1.7615e-6, -1.0480e-4, 0.0019, 0.0460])
 LIDAR_POLPART_ICE_NONSPHERE = np.array(
     [1.3615e-8, -2.04206e-6, 7.51799e-5, 0.00078213, 0.0182131])
+
+
+# ---------------------------------------------------------------------------
+# ISCCP simulator (ICARUS) configuration (appended for the Phase-6 port).
+# Sources: src/simulator/icarus/icarus.F90 (module parameters; (c) 2009
+# Lawrence Livermore National Security LLC / (c) British Crown Copyright 2009,
+# the Met Office, BSD-3-Clause; see LICENSES/ and NOTICE),
+# cosp_constants.F90 (the "used by ISCCP simulator" physical constants) and
+# cosp_config.F90 (isccp_histTau/isccp_histPres joint-histogram bins).
+# ---------------------------------------------------------------------------
+# Lower limit on a detectable optical depth (icarus.F90 'tauchk').
+ISCCP_TAUCHK = -np.log(0.9999999)
+# Minimum optical depth counted as cloud in totalcldarea and the cloudy-mean
+# properties (icarus.F90 'isccp_taumin'); the [0, 0.3) histogram bin still
+# receives thinner boxes.
+ISCCP_TAUMIN = 0.3
+# Water-vapour-continuum reference state (Schwarzkopf and Ramaswamy 1999 fit,
+# evaluated at 955 cm-1): mean sea-level pressure in dyn cm-2 (= 101325 Pa;
+# the continuum works in CGS pressures, pfull * 10) and reference temperature.
+ISCCP_PSTD = 1013250.0
+ISCCP_T0 = 296.0
+# Planck-function exponent hc*nu/kB (K) of the ISCCP 10.5-um window channel:
+# radiance = 1/(exp(ISCCP_PLANCK_K/T) - 1), T = ISCCP_PLANCK_K/ln(1 + 1/rad).
+ISCCP_PLANCK_K = 1307.27
+# Physical constants as used by the ISCCP simulator (cosp_constants.F90;
+# note avo/grav there are labelled "used by ISCCP simulator" and differ in
+# precision from other paths' values — kept separate for bit-faithfulness).
+ISCCP_AMD = 28.9644     # Molar mass of dry air (g/mol)
+ISCCP_AMW = 18.01534    # Molar mass of water (g/mol)
+ISCCP_AVO = 6.023e23    # Avogadro constant (1/mol)
+ISCCP_GRAV = 9.80665    # Gravitational acceleration (m/s2)
+# Joint-histogram bins (cosp_config.F90). isccp_histTau is the same shared
+# tau_binBounds table as the MODIS histogram — reused rather than duplicated.
+# isccp_histPres is pres_binBounds in hPa (the Fortran drivers pass
+# boxptop/100 to ICARUS_COLUMN), i.e. MODIS_HIST_PRES without the 100x.
+NUM_ISCCP_TAU_BINS = NUM_MODIS_TAU_BINS
+ISCCP_HIST_TAU = MODIS_HIST_TAU
+NUM_ISCCP_PRES_BINS = NUM_MODIS_PRES_BINS
+ISCCP_HIST_PRES = MODIS_HIST_PRES / 100.0

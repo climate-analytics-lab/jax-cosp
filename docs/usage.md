@@ -86,12 +86,47 @@ out.warmrain.cfodd_ntotal       # (25, 30, 3, *batch) CFODD samples
 MODIS can also run standalone on any subcolumn realization
 (`jcosp.modis.simulate_modis(frac_out, mr_hydro, reff, dtau_s, dtau_c,
 phalf, ...)`, with `mr_hydro`/`reff` from
-`jcosp.inputs.distribute_hydrometeors`). Pass `isccp_ctp` when an ISCCP
-simulator is available: COSP replaces the CO2-slicing cloud-top pressure of
-clouds below 700 hPa with the ISCCP value; without it the CO2-slicing CTP
-is kept (see docs/translation_notes.md). Cloud effective radii
-(`state.reff`) should be provided for meaningful MODIS optics — the size
-retrieval reads the 3.7-µm optical properties computed from them.
+`jcosp.inputs.distribute_hydrometeors`). Pass `isccp_ctp` (e.g. the ISCCP
+simulator's `boxptop`, below): COSP replaces the CO2-slicing cloud-top
+pressure of clouds below 700 hPa with the ISCCP value; without it the
+CO2-slicing CTP is kept (see docs/translation_notes.md). Cloud effective
+radii (`state.reff`) should be provided for meaningful MODIS optics — the
+size retrieval reads the 3.7-µm optical properties computed from them.
+
+## ISCCP simulator
+
+The ISCCP path needs the 10.5-µm cloud emissivities (`dem_s`, `dem_c`),
+the skin temperature and a surface emissivity on top of the MODIS inputs.
+In the combined driver it runs on the same SCOPS realization and its
+`boxptop` completes the MODIS low-cloud CTP substitution, exactly as in
+cosp.F90:
+
+```python
+out = simulate_cloudsat_modis(
+    state, lut, dtau_s, dtau_c, phalf,
+    key=jax.random.PRNGKey(0), ncolumns=100, sunlit=sunlit,
+    run_isccp=True, dem_s=dem_s, dem_c=dem_c, skt=skt, emsfc_lw=0.98,
+)
+
+isc = out.isccp
+isc.column.totalcldarea   # cloud area, tau > 0.3 (%)
+isc.column.fq_isccp       # (7, 7, *batch) tau/CTP histogram (%), the 49
+                          # ISCCP cloud types (CTP axis surface-first)
+isc.column.meanptop       # cloudy-mean cloud-top pressure (Pa)
+isc.column.meantaucld     # cloudy-mean optical thickness (via albedo)
+isc.column.meantb         # all-sky 10.5-µm brightness temperature (K)
+isc.subcolumn.boxptop     # (ncolumns, *batch) per-subcolumn CTP (Pa)
+```
+
+ISCCP also runs standalone on any subcolumn optics
+(`jcosp.isccp.simulate_isccp(frac_out, tau_067, emiss_11, skt, emsfc_lw,
+temperature, pressure_full, pressure_half, qv, sunlit=...,
+top_height=1, top_height_direction=2)`), where `tau_067`/`emiss_11` are
+the host's stratiform/convective fields merged through the SCOPS map with
+`jcosp.modis.optics.simulator_optics`. `top_height=1` is the
+ISCCP-recommended IR-adjusted cloud top (2: physical top, 3: unadjusted
+radiative). Night points report R_UNDEF except the brightness
+temperatures, which the 10.5-µm channel provides day and night.
 
 ## From JAX-GCM
 

@@ -18,10 +18,14 @@ diagnostics. Phase 5 added the **MODIS simulator**
 thickness / phase / particle-size retrievals, column means and joint
 histograms) and the **CFODD + warm-rain-occurrence diagnostics** of
 Michibata et al. (2019) that join MODIS retrievals with the CloudSat radar
-(`jcosp.simulator.simulate_cloudsat_modis`). Later phases grow the package
-toward the full COSP instrument suite (ISCCP, MISR, PARASOL).
+(`jcosp.simulator.simulate_cloudsat_modis`). Phase 6 added the **ISCCP
+simulator** (`jcosp.isccp.simulate_isccp`: ICARUS 10.5-µm brightness
+temperatures, IR-adjusted cloud-top pressures, tau/CTP joint histogram),
+whose `boxptop` completes the MODIS low-cloud CTP substitution in the
+combined driver. Later phases grow the package toward the full COSP
+instrument suite (MISR, PARASOL).
 
-## Status: alpha (Phases 0–5 of the translation plan)
+## Status: alpha (Phases 0–6 of the translation plan)
 
 | Component | COSP v2 origin | Status |
 | --- | --- | --- |
@@ -36,7 +40,7 @@ toward the full COSP instrument suite (ISCCP, MISR, PARASOL).
 | Warm-rain classification (Mülmenstädt et al. 2020) | original implementation | done |
 | CFODD / warm-rain regimes (`COSP_DIAG_WARMRAIN`) | `cosp_stats.F90` | ported (vgrid path) |
 | MODIS input optics (tau merge, phase partition, 3.7-µm g/w0) | `cosp_optics.F90`, driver MODIS block | ported |
-| MODIS subcolumn retrievals (mask, CTP, tau, phase, size) | `modis_simulator.F90` | ported (ISCCP CTP substitution pending ISCCP) |
+| MODIS subcolumn retrievals (mask, CTP, tau, phase, size) | `modis_simulator.F90` | ported (incl. ISCCP CTP substitution) |
 | MODIS column means + joint histograms (tau/CTP, tau/Reff, LWP-IWP/Reff) | `modis_simulator.F90`, `cosp_stats.F90:hist2D` | ported |
 | CALIPSO lidar optics (532 nm, sphere + non-sphere ice) | `cosp_optics.F90:lidar_optics` | ported |
 | CALIPSO ATB + perpendicular channel | `actsim/lidar_simulator.F90` | ported |
@@ -44,7 +48,8 @@ toward the full COSP instrument suite (ISCCP, MISR, PARASOL).
 | Lidar-only cloud / radar-lidar TCC | `cosp_stats.F90:COSP_LIDAR_ONLY_CLOUD` | ported |
 | CALIPSO OPAQ diagnostics (`COSP_OPAQ`) | `lidar_simulator.F90` | planned |
 | ATLID / ground lidar variants | `lidar_simulator.F90` | planned |
-| ISCCP / MISR / PARASOL | — | planned |
+| ISCCP (ICARUS: Tb, IR-adjusted CTP, tau/CTP histogram) | `simulator/icarus/icarus.F90` | ported |
+| MISR / PARASOL | — | planned |
 
 ## Design
 
@@ -79,7 +84,8 @@ JAX_PLATFORMS=cpu pytest -n 8
 
 jax-cosp is Apache-2.0 licensed (see `LICENSE`). It is a derived work of
 COSP v2, which is BSD-3-Clause licensed by the Regents of the University of
-Colorado, Lawrence Livermore National Security LLC, and RIAM Kyushu University;
+Colorado, Lawrence Livermore National Security LLC, the Met Office (British
+Crown Copyright, ISCCP/ICARUS) and RIAM Kyushu University;
 the original license texts are preserved in `LICENSES/` and the attribution is
 detailed in `NOTICE`. Each ported module cites its source file and original
 authors. If you use this package, please cite Swales et al. (2018,

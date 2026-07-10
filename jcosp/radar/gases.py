@@ -105,7 +105,8 @@ _B3 = np.array([
     0.0286000, 0.0264000, 0.0234000, 0.0253000, 0.0240000, 0.0286000])
 
 
-def gases(pressure, temperature, specific_humidity, freq):
+def gases(pressure, temperature, specific_humidity, freq,
+          legacy_o2_interference: bool = False):
     """Two-way gaseous attenuation (dB/km) through each volume.
 
     Parameters
@@ -118,6 +119,11 @@ def gases(pressure, temperature, specific_humidity, freq):
         Specific humidity (kg/kg).
     freq : float
         Radar frequency (GHz), < 300.
+    legacy_o2_interference : bool
+        Reproduce the reference Fortran's (incorrect) O2 line-overlap
+        interference term instead of the corrected Liebe/Rosenkranz form.
+        Only for validation against compiled COSP; see the fixed-bug note
+        below and docs/translation_notes.md.
     """
     f = freq
     pressure = jnp.asarray(pressure, dtype=jnp.result_type(float))
@@ -137,11 +143,20 @@ def gases(pressure, temperature, specific_humidity, freq):
     delt = _A5 * p_ * x**_A6
     lo = (_V0 - f) ** 2 + gm**2
     hi = (_V0 + f) ** 2 + gm**2
-    # NOTE: the second bracket reproduces the Fortran verbatim, including its
-    # use of `x` (i.e. `lo`) in both terms — the reference has
-    # (aux3/x - aux4/x), not (aux3/lo - aux4/hi).
+    # FIXED UPSTREAM BUG (see docs/translation_notes.md): the reference
+    # Fortran writes the line-overlap interference term as
+    # (aux3/x - aux4/x) — the mirror-resonance contribution carries the
+    # wrong sign AND the near-resonance denominator. Liebe's (1985) MPM /
+    # Rosenkranz line shape is gamma*(1/x + 1/y) - delta*((v0-f)/x +
+    # (v0+f)/y). The Fortran form overestimates W-band dry-air attenuation
+    # ~4-5x (0.23 vs the literature ~0.05 dB/km one-way at sea level);
+    # moist-column totals are ~15% high.
+    if legacy_o2_interference:
+        interference = (_V0 - f) / lo - (_V0 + f) / lo
+    else:
+        interference = (_V0 - f) / lo + (_V0 + f) / hi
     fpp_o2 = ((1.0 / lo + 1.0 / hi) * (gm * f / _V0)
-              - (delt * f / _V0) * ((_V0 - f) / lo - (_V0 + f) / lo))
+              - (delt * f / _V0) * interference)
     s_o2 = _A1 * pth3[..., None] * jnp.exp(_A2 * one_th[..., None])
     term1 = jnp.sum(fpp_o2 * s_o2, axis=-1)
 

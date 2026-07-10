@@ -146,17 +146,18 @@ def cloud_top_pressure(tau, pressure_half, tau_limit):
     Trapezoidal integration of pressure against optical depth down to
     ``tau_limit``, assuming pressure varies linearly across each layer.
 
-    Faithfully reproduced Fortran quirk: the call site passes an
-    (nLevels+1)-element tau array (0 prepended) into an nLevels dummy, so the
-    *bottom layer never contributes* — layer L (0-based, L <= nlev-2) is
-    integrated between edges L and L+1, and a cloud confined entirely to the
-    bottom layer yields CTP = 0.
+    FIXED UPSTREAM BUG (docs/translation_notes.md): the reference call site
+    passes an (nLevels+1)-element tau array (0 prepended) into an nLevels
+    dummy, so its *bottom layer never contributes* to the integral and a
+    cloud confined entirely to the bottom layer yields CTP = 0 (which then
+    also escapes the ISCCP low-cloud substitution). Here every layer is
+    integrated between its own edges.
     """
     nlev = tau.shape[0]
     p = pressure_half[:, None] if pressure_half.ndim < tau.ndim else pressure_half
-    xs = (tau[: nlev - 1],                       # tauIncrement(i) = tau(L)
-          jnp.broadcast_to(p[: nlev - 1], tau[: nlev - 1].shape),   # edge L
-          jnp.broadcast_to(p[1:nlev], tau[: nlev - 1].shape))       # edge L+1
+    xs = (tau,                                          # tauIncrement(L)
+          jnp.broadcast_to(p[:nlev], tau.shape),        # edge L
+          jnp.broadcast_to(p[1:nlev + 1], tau.shape))   # edge L+1
 
     def step(carry, x):
         tot_tau, tot_prod = carry
@@ -233,11 +234,15 @@ def interpolate_to_min(x, y, yobs):
     upper = lower + 1
     d_lo = at(lower)
     d_hi = at(upper)
-    bracket = d_lo * d_hi < 0.0
+    # FIXED UPSTREAM BUG (docs/translation_notes.md): the Fortran requires a
+    # strictly negative bracket product, so a trial point hitting the
+    # observed reflectance *exactly* returns the fill value instead of that
+    # root. Accept the boundary case (<=); with d_hi = 0 the interpolation
+    # returns x_hi exactly, with d_lo = 0 it returns x_lo.
+    bracket = d_lo * d_hi <= 0.0
     x_lo = jnp.take(x, lower)
     x_hi = jnp.take(x, upper)
-    # Bracketing implies d_hi - d_lo != 0; the where-clamp hardens gradients.
-    den = jnp.where(bracket, d_hi - d_lo, 1.0)
+    den = jnp.where(d_hi != d_lo, d_hi - d_lo, 1.0)
     val = x_hi - d_hi * (x_hi - x_lo) / den
     return jnp.where(bracket, val, config.MODIS_RE_FILL)
 
@@ -401,9 +406,10 @@ def modis_column(phase, ctp, tau, size) -> ModisColumn:
     tau_ice_log = mean_or_undef(msum(logtau, ice), n_ice)
     size_ice = mean_or_undef(msum(size, ice), n_ice)
     iwp = mean_or_undef(msum(iwp_cells, ice), n_ice)
-    # As in the Fortran, the mean CTP divides by max(1, count): a cloud-free
-    # point reports 0, not R_UNDEF.
-    ctp_mean = msum(ctp, cloud) / jnp.maximum(n_tot, 1.0)
+    # FIXED UPSTREAM BUG (docs/translation_notes.md): the Fortran divides by
+    # max(1, count), so a cloud-free sunlit point reports mean CTP = 0 Pa
+    # rather than "undefined". Report R_UNDEF like every other mean here.
+    ctp_mean = mean_or_undef(msum(ctp, cloud), n_tot)
 
     # Histogram working copies: -999 in undetected subcolumns; the Reff
     # copies keep R_UNDEF there (the Fortran's where-block does not touch

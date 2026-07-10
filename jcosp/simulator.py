@@ -18,7 +18,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import classify, config, inputs, modis
+from jcosp import classify, config, inputs, isccp, modis
 from jcosp.radar import optics, quickbeam
 from jcosp.radar.gases import gases
 from jcosp.stats import change_vertical_grid
@@ -142,11 +142,14 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
 
 
 class CloudsatModisOutputs(NamedTuple):
-    """Joint CloudSat + MODIS diagnostics (Phase-5 scope)."""
+    """Joint CloudSat + MODIS (+ optional ISCCP) diagnostics."""
 
     cloudsat: CloudsatOutputs
     modis: modis.ModisOutputs
     warmrain: modis.WarmRainDiagnostics  # Michibata et al. (2019) CFODD/regimes
+    # The field name shadows the module in the class body, so the
+    # annotation must be a string. Present when run_isccp=True.
+    isccp: "isccp.IsccpOutputs | None" = None
 
 
 def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
@@ -154,8 +157,12 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
                             key=None, ncolumns: int = 100, overlap: int = 3,
                             frac_out=None, sunlit=None, isccp_ctp=None,
                             radar: config.RadarConfig = config.CLOUDSAT_RADAR,
+                            run_isccp: bool = False, dem_s=None, dem_c=None,
+                            skt=None, emsfc_lw=None,
+                            isccp_top_height: int = 1,
+                            isccp_top_height_direction: int = 2,
                             ) -> CloudsatModisOutputs:
-    """Run CloudSat + MODIS + CFODD/warm-rain on one SCOPS realization.
+    """Run CloudSat + MODIS (+ optional ISCCP) on one SCOPS realization.
 
     ``simulate_cloudsat`` is unchanged; this composes it with the MODIS
     simulator (which needs the extra host fields ``dtau_s``/``dtau_c`` —
@@ -166,11 +173,40 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
     regridded linearly, dBZe log-averaged, onto the 40 x 480 m statistical
     grid whose upper-interface heights serve as ``zlev``.
 
+    With ``run_isccp=True`` (which additionally requires ``dem_s``/``dem_c``
+    — gridbox-mean 10.5-um cloud emissivities per layer — plus ``skt`` and
+    ``emsfc_lw``), the ISCCP simulator runs on the same SCOPS realization
+    and, exactly as cosp.F90 wires ``isccp_boxptop`` into
+    ``modis_subcolumn``, its ``boxptop`` replaces the MODIS CO2-slicing
+    cloud-top pressure of clouds below 700 hPa (unless an explicit
+    ``isccp_ctp`` is given, which takes precedence).
+
     ``sunlit``/``isccp_ctp`` are passed through to the MODIS column stage
     (see ``jcosp.modis.simulate_modis``).
     """
     cs = simulate_cloudsat(state, lut, key=key, ncolumns=ncolumns,
                            overlap=overlap, frac_out=frac_out, radar=radar)
+
+    isc = None
+    if run_isccp:
+        if dem_s is None or dem_c is None or skt is None or emsfc_lw is None:
+            raise ValueError(
+                "run_isccp=True requires dem_s, dem_c, skt and emsfc_lw")
+        # The subcolumn optics ICARUS consumes are the driver's merges of
+        # the stratiform/convective gridbox fields through the SCOPS map
+        # (cosp2_test.F90 -> cospIN%tau_067 / cospIN%emiss_11).
+        isc = isccp.simulate_isccp(
+            cs.frac_out,
+            modis.simulator_optics(cs.frac_out, jnp.asarray(dtau_s),
+                                   jnp.asarray(dtau_c)),
+            modis.simulator_optics(cs.frac_out, jnp.asarray(dem_s),
+                                   jnp.asarray(dem_c)),
+            skt, emsfc_lw, state.temperature, state.pressure, pressure_half,
+            state.specific_humidity, sunlit=sunlit,
+            top_height=isccp_top_height,
+            top_height_direction=isccp_top_height_direction)
+        if isccp_ctp is None:
+            isccp_ctp = isc.subcolumn.boxptop
 
     # The MODIS input build consumes the same subcolumn hydrometeors the
     # radar optics saw (recomputed here; distribute_hydrometeors is cheap
@@ -205,4 +241,5 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
         iwp=col.iwp, icecot=col.tau_ice, icereff=col.size_ice,
         frac_out=frac_r, dbze=dbze_r)
 
-    return CloudsatModisOutputs(cloudsat=cs, modis=mod, warmrain=wr)
+    return CloudsatModisOutputs(cloudsat=cs, modis=mod, warmrain=wr,
+                                isccp=isc)

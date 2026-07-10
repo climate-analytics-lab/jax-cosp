@@ -1,7 +1,10 @@
 # Translation notes: COSP v2 Fortran → jax-cosp
 
 Documented, intentional differences between this port and the reference
-Fortran (COSPv2.0, github.com/CFMIP/COSPv2.0). Everything not listed here is
+Fortran (COSPv2.0, github.com/CFMIP/COSPv2.0). **Outright bugs found in the
+reference are FIXED by default (with `legacy_*` switches where they change
+values materially); the consolidated registry, impacts and upstream issue
+links are in [fixed_upstream_bugs.md](fixed_upstream_bugs.md).** Everything not listed here is
 meant to be algorithm- and value-faithful; the `*_test.py` suites check the
 ported routines against loop-for-loop transliterations of the Fortran, and
 `gases()` against values from the compiled Fortran itself.
@@ -293,3 +296,82 @@ ported routines against loop-for-loop transliterations of the Fortran, and
 - Port of `cosp_stats.F90:hist2D`. Unlike `hist1D`, the Fortran applies no
   R_GROUND poisoning here; out-of-range samples (including R_UNDEF/-999
   fills) are simply not counted. Reproduced as-is.
+
+## ISCCP simulator (`jcosp/isccp/`)
+
+- Port of `src/simulator/icarus/icarus.F90` (`ICARUS_SUBCOLUMN` /
+  `ICARUS_COLUMN`; Klein and Jakob 1999, Webb et al. 2001), (c) British
+  Crown Copyright 2009, the Met Office / (c) 2009 Lawrence Livermore
+  National Security, BSD-3-Clause — a *new* license holder for this repo,
+  preserved in `LICENSES/COSP-BSD-3-Clause-MetOffice.txt` and NOTICE. The
+  subcolumn optics merge (`cosp_simulator_optics`) is reused from the
+  MODIS port (`jcosp.modis.optics.simulator_optics`); the histogram bins
+  reuse the shared `tau_binBounds` table (`ISCCP_HIST_TAU is
+  MODIS_HIST_TAU`), with `ISCCP_HIST_PRES` in hPa because the Fortran
+  call sites hand `ICARUS_COLUMN` `boxptop/100`.
+- **Units.** `boxptop` is returned in Pa (the Fortran's "(mb)" comment is
+  stale: cosp.F90 stores the undivided value and passes Pa to
+  `modis_subcolumn`); `meanptop` is in Pa (the Fortran's `100._wp *`
+  restores the hPa column means to Pa); `totalcldarea` and `fq_isccp` are
+  in percent, and `fq_isccp`'s pressure axis is flipped surface-first by
+  the `simulate_isccp` driver exactly as cosp.F90's
+  `isccp_fq(:,:,7:1:-1)`.
+- The `top_height` 1 (IR-adjusted, default) / 2 (physical top) / 3
+  (unadjusted radiative) variants and both `top_height_direction` options
+  are ported; the sequential icarus loops are vectorized (running
+  minima/maxima as masked argmin/argmax reductions, the radiance stacks as
+  `lax.scan` in the exact Fortran accumulation order, the
+  temperature-match search as a first/last-True reduction over the level
+  axis) and proven against a loop transliteration (`simulator_test.py`).
+- `levmatch` is returned as a 0-based level index with -1 for unset
+  (Fortran: 1-based with 0); it is the Fortran's unit-testing aid, kept
+  for the same purpose.
+- **Reproduced quirks:** `atd = max(tauchk, |dT|)` reuses the optical-depth
+  constant `tauchk` (~1e-7) as a temperature-difference floor in the log-p
+  interpolation; the "no match" fallbacks apply sequentially so a box that
+  is both colder than the tropopause and warmer than `atmax` lands at the
+  lowest level; a detectable box (`tau > tauchk`) whose brightness
+  temperature falls strictly between `attrop` and `atmax` with no bracket
+  keeps `ptop = 0` and is reported *clear* (R_UNDEF); the `[0, 0.3)` tau
+  bin of `fq_isccp` receives detected boxes that `totalcldarea` (which
+  requires `tau > 0.3`) does not count; `meantb` is computed for night
+  points too (10.5-um radiances need no daylight), while every other
+  column output is R_UNDEF at night unless `top_height = 3` (which
+  reports day and night alike, as in the Fortran).
+- **Documented deviation:** for `top_height = 2` the Fortran never
+  assigns `boxttop`/`meantbclr` (intent(inout) — upstream reads
+  uninitialized memory if it consumes them); the port returns R_UNDEF.
+- **Gradient hardening.** The `emcld` division and the `1e-6` radiance
+  floor of the pc-adjustment are clamped inside the `where`-masked branch;
+  the albedo fit `tau**0.895` clamps its input to `taumin` inside the
+  cloudy mask (R_UNDEF fills would poison the fractional power); the
+  cloudy-mean divisions clamp `totalcldarea` away from zero inside the
+  `totalcldarea > 0` branch. Radiances, Tb, the IR adjustment, the log-p
+  CTP interpolation and the albedo/mean-tau fits are differentiable; the
+  level-match selection, the `tauchk`/`taumin` overrides and all counts
+  are step functions.
+- **Composition** (`jcosp.simulator.simulate_cloudsat_modis(run_isccp=True)`):
+  ISCCP runs on the same SCOPS realization as the radar and MODIS, and its
+  `boxptop` feeds the MODIS low-cloud (CTP > 700 hPa) substitution exactly
+  as cosp.F90 wires `isccp_boxptop` into `modis_subcolumn` — including the
+  case where the substituted value is R_UNDEF (an ISCCP-undetected but
+  MODIS-detected box, e.g. a night point or a `ptop = 0` fallback), which
+  the Fortran also injects. Night-point MODIS *subcolumn* CTPs thereby
+  carry R_UNDEF where low cloud is present (the Fortran never runs MODIS
+  subcolumns at night at all; the column stage masks them either way).
+
+### Fixed upstream bugs
+
+- **Stale near-total-cover snap in cosp.F90 (not ported).** After
+  `ICARUS_COLUMN`, cosp.F90 clamps `isccp_totalcldarea` values within
+  1e-5 of **1.0** to exactly 1.0 ("Check if there is any value slightly
+  greater than 1"). That clamp predates the percent conversion now inside
+  `ICARUS_COLUMN` ("Represent in percent", `totalcldarea*100`): applied to
+  percent values it can only ever snap ~1% covers to exactly 1% — the
+  wrong quantity — and full covers (100.0) are untouched. With
+  count/ncol arithmetic a spurious `1.0 ± <1e-5` percent value would
+  additionally require ncol on the order of 1e7, so the branch is
+  unreachable in practice. The port drops the clamp; full cover is exact
+  (tested: `test_full_cover_is_exact_hundred`). No other outright bug was
+  found in icarus.F90 itself — the remaining oddities above are
+  modelling choices or harmless quirks and are ported faithfully.

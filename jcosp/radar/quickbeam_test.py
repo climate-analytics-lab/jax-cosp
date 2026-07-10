@@ -45,7 +45,7 @@ def quickbeam_subcolumn_reference(z_vol, kr_vol, g_vol, hgt, radar_at_layer_one)
 
 
 class QuickbeamSubcolumnTest(unittest.TestCase):
-    def test_matches_fortran_transliteration(self):
+    def test_legacy_matches_fortran_transliteration(self):
         rng = np.random.default_rng(11)
         nlev = 15
         hgt = np.sort(rng.uniform(0.2, 16.0, nlev))[::-1].copy()  # km, TOA-first
@@ -57,10 +57,34 @@ class QuickbeamSubcolumnTest(unittest.TestCase):
             ref_dbze, ref_non = quickbeam_subcolumn_reference(
                 z_vol, kr, g, hgt, radar_top)
             dbze, ze_non = quickbeam_subcolumn(
-                z_vol, kr, g, hgt, radar_at_layer_one=radar_top)
+                z_vol, kr, g, hgt, radar_at_layer_one=radar_top,
+                legacy_gate2=True)
             np.testing.assert_allclose(np.asarray(dbze), ref_dbze, rtol=1e-6,
                                        err_msg=f"radar_top={radar_top}")
             np.testing.assert_allclose(np.asarray(ze_non), ref_non, rtol=1e-6)
+
+    def test_fixed_gate2_accumulates_and_differs_only_there(self):
+        # FIXED UPSTREAM BUG: gate 2 (0-based index 1) of the spaceborne
+        # hydrometeor sum must accumulate gate 1 with the trapezoid rule.
+        # The correction propagates from index 1 downward but the *increment*
+        # relative to the legacy path is set entirely at index 1.
+        rng = np.random.default_rng(13)
+        nlev = 12
+        hgt = np.linspace(16.0, 0.4, nlev)
+        z_vol = 10 ** rng.uniform(-4, 3, nlev)
+        kr = rng.uniform(0.1, 2.0, nlev)
+        g = np.zeros(nlev)
+        dbze_fix, _ = quickbeam_subcolumn(z_vol, kr, g, hgt)
+        dbze_leg, _ = quickbeam_subcolumn(z_vol, kr, g, hgt, legacy_gate2=True)
+        diff = np.asarray(dbze_leg) - np.asarray(dbze_fix)
+        # Gate 1 (index 0) identical; correction appears at index 1.
+        self.assertAlmostEqual(diff[0], 0.0, places=10)
+        expected_index1 = (kr[0] * (hgt[0] - hgt[1])          # a0
+                           + (kr[0] + kr[1]) * (hgt[0] - hgt[1])
+                           - kr[1] * (hgt[1] - hgt[2]))
+        self.assertAlmostEqual(diff[1], expected_index1, places=8)
+        # Downstream gates inherit exactly the same offset.
+        np.testing.assert_allclose(diff[2:], diff[1], rtol=1e-8)
 
     def test_attenuation_only_reduces(self):
         nlev = 10

@@ -40,6 +40,10 @@ def diag_warmrain_reference(temp, zlev, lwp, liqcot, liqreff,
                         config.CFODD_NCLASS))
     wr = np.zeros(config.WR_NREGIME)
     icod = np.zeros((nlev, ncol))
+    # FIXED UPSTREAM BUG: only in-cloud cells of SLWC-passing subcolumns are
+    # CFODD samples (the Fortran histograms every cell, leaking detectable
+    # echoes of failed subcolumns into ICOD bin 0).
+    dbze_hist = np.full_like(np.asarray(dbze, dtype=float), -999.0)
 
     br = config.CFODD_BNDRE
     if ((lwp <= config.CWP_THRESHOLD and lwp != R_UNDEF)
@@ -98,9 +102,10 @@ def diag_warmrain_reference(temp, zlev, lwp, liqcot, liqreff,
                 diagicod = liqcot * (1.0 - ((zlev[k] - cbtmh) / diagcgt)
                                      ** (5.0 / 3.0))
             icod[k, j] = min(diagicod, config.CFODD_ICOD_MAX)
+            dbze_hist[k, j] = dbze[k, j]
 
     cfodd_n[:, :, icls - 1] = hist2d_reference(
-        dbze.ravel(), icod.ravel(),
+        dbze_hist.ravel(), icod.ravel(),
         config.CFODD_HIST_DBZE, config.CFODD_HIST_ICOD)
     return cfodd_n, wr
 

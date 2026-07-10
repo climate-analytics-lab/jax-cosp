@@ -28,6 +28,12 @@ apply to the portions of this software derived from COSP:
     T. Michibata et al.)
     -> LICENSES/COSP-BSD-3-Clause-Colorado.txt (same terms)
 
+  * (c) British Crown Copyright 2009, the Met Office, and Copyright (c)
+    2009, Lawrence Livermore National Security (ISCCP simulator / ICARUS,
+    icarus.F90; originally by S. Klein and M. Webb, modified for COSPv2.0
+    by D. Swales)
+    -> LICENSES/COSP-BSD-3-Clause-MetOffice.txt
+
 Each ported module cites the specific COSP source file, original authors,
 and reference publications in its docstring. The scientific content of
 the ported algorithms is unchanged; see docs/translation_notes.md for

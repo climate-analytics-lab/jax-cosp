@@ -113,10 +113,13 @@ def run_jcosp(case):
     t = case["t"][:, None]
     z_vol, _, kr_vol = quickbeam_optics(
         lut, config.HYDRO_CLASSES_1M, hm, re, None, p, t)
-    g_vol = gases(p, t, case["sh"][:, None], 94.0)
+    # Legacy modes reproduce the reference Fortran's O2 interference term
+    # and gate-2 attenuation exactly; the library defaults fix both (see
+    # docs/translation_notes.md "Fixed upstream bugs").
+    g_vol = gases(p, t, case["sh"][:, None], 94.0, legacy_o2_interference=True)
     g_vol = np.broadcast_to(np.asarray(g_vol), z_vol.shape)
     dbze, ze_non = quickbeam_subcolumn(
-        z_vol, kr_vol, g_vol, case["hgt_km"][:, None])
+        z_vol, kr_vol, g_vol, case["hgt_km"][:, None], legacy_gate2=True)
     prec = prec_scops(case["frac_out"].T, case["ls_p"], case["cv_p"])
     return {"z_vol": np.asarray(z_vol).T, "kr_vol": np.asarray(kr_vol).T,
             "g_vol": np.asarray(g_vol).T, "dbze": np.asarray(dbze).T,
