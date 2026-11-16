@@ -21,6 +21,8 @@ import jax.numpy as jnp
 
 from jcosp.constants import R_UNDEF
 from jcosp.modis.cfodd import WarmRainDiagnostics, diag_warmrain
+from jcosp.modis.imager import (CLOUD_CCI, CLOUD_CCI_MIN_COS_ZENITH,
+                                ImagerRetrieval, imager_water_paths)
 from jcosp.modis.optics import (ModisOptics, build_modis_optics, get_g_nir,
                                 get_ssa_nir, modis_optics, optics_partition,
                                 simulator_optics)
@@ -33,6 +35,8 @@ __all__ = [
     "optics_partition", "modis_optics", "get_g_nir", "get_ssa_nir",
     "ModisRetrievals", "modis_subcolumn", "ModisColumn", "modis_column",
     "WarmRainDiagnostics", "diag_warmrain",
+    "ImagerRetrieval", "CLOUD_CCI", "CLOUD_CCI_MIN_COS_ZENITH",
+    "imager_water_paths",
 ]
 
 

@@ -255,6 +255,13 @@ class ModisRetrievals(NamedTuple):
     tau: jnp.ndarray                 # 0.67-um optical thickness (R_UNDEF clear)
     size: jnp.ndarray                # particle radius (m); R_UNDEF clear,
     #                                  1e-6 * MODIS_RE_FILL failed retrieval
+    # The quantities the phase and size above are chosen from, for every
+    # subcolumn (no R_UNDEF masking), so that a retrieval with a different
+    # phase rule (``jcosp.modis.imager``) reuses the reflectance inversion
+    # instead of repeating it.
+    liquid_fraction: jnp.ndarray     # liquid share of the top-of-cloud extinction
+    size_if_liquid: jnp.ndarray      # radius from the liquid table (m);
+    size_if_ice: jnp.ndarray         # ... and the ice table; < 0 where failed
 
 
 def modis_subcolumn(pressure_half, tau, liq_frac, g, w0,
@@ -318,7 +325,10 @@ def modis_subcolumn(pressure_half, tau, liq_frac, g, w0,
             isccp_ctp, ctp)
 
     return ModisRetrievals(phase=phase, cloud_top_pressure=ctp,
-                           tau=retrieved_tau, size=size)
+                           tau=retrieved_tau, size=size,
+                           liquid_fraction=liq_fraction,
+                           size_if_liquid=1.0e-6 * size_w,
+                           size_if_ice=1.0e-6 * size_i)
 
 
 class ModisColumn(NamedTuple):

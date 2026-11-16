@@ -93,6 +93,27 @@ CO2-slicing CTP is kept (see docs/translation_notes.md). Cloud effective
 radii (`state.reff`) should be provided for meaningful MODIS optics — the
 size retrieval reads the 3.7-µm optical properties computed from them.
 
+### Water paths under another imager product's definition
+
+`col.lwp` / `col.iwp` are MODIS L3's in-cloud means. Other visible/near-IR
+products differ only in the constants of the `4/3 tau r_e rho / Q_e`
+conversion, the retrieval limits and the cloud-top phase rule, so
+`jcosp.modis.imager` reapplies those to the same subcolumn retrievals at no
+further radiative-transfer cost. `CLOUD_CCI` is ESA Cloud_cci's CC4CL
+(McGarragh et al. 2018), which books every detected pixel to liquid or ice:
+
+```python
+from jcosp.modis import CLOUD_CCI, CLOUD_CCI_MIN_COS_ZENITH, imager_water_paths
+
+lwp, iwp = imager_water_paths(out.modis.subcolumn, CLOUD_CCI)  # (*batch), kg m-2
+day = cos_zenith > CLOUD_CCI_MIN_COS_ZENITH  # CC4CL retrieves below 80 degrees
+```
+
+These are all-sky means (clear subcolumns and those of the other phase
+count as zero), the convention of the product's `lwp_allsky`/`iwp_allsky`.
+The subcolumn stage is not day-masked, so multiply by `day` and average it
+alongside: the daytime mean is `mean(lwp * day) / mean(day)`.
+
 ## ISCCP simulator
 
 The ISCCP path needs the 10.5-µm cloud emissivities (`dem_s`, `dem_c`),

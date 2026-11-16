@@ -42,6 +42,7 @@ instrument suite (MISR, PARASOL).
 | MODIS input optics (tau merge, phase partition, 3.7-µm g/w0) | `cosp_optics.F90`, driver MODIS block | ported |
 | MODIS subcolumn retrievals (mask, CTP, tau, phase, size) | `modis_simulator.F90` | ported (incl. ISCCP CTP substitution) |
 | MODIS column means + joint histograms (tau/CTP, tau/Reff, LWP-IWP/Reff) | `modis_simulator.F90`, `cosp_stats.F90:hist2D` | ported |
+| Imager water paths under another product's constants (ESA Cloud_cci CC4CL) | original implementation (McGarragh et al. 2018, Eq. 60) | done (`jcosp.modis.imager`) |
 | CALIPSO lidar optics (532 nm, sphere + non-sphere ice) | `cosp_optics.F90:lidar_optics` | ported |
 | CALIPSO ATB + perpendicular channel | `actsim/lidar_simulator.F90` | ported |
 | CALIPSO SR / CFAD / cloud + phase fractions (GOCCP) | `lidar_simulator.F90:COSP_CLDFRAC` | ported (vgrid path) |
