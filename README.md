@@ -25,6 +25,12 @@ whose `boxptop` completes the MODIS low-cloud CTP substitution in the
 combined driver. Later phases grow the package toward the full COSP
 instrument suite (MISR, PARASOL).
 
+The package also carries a small number of diagnostics that are **not in
+COSP** but are built on its simulators, listed under
+[Beyond COSP](#beyond-cosp) below: the warm-rain classification and the
+**imager water paths under another product's definition**
+(`jcosp.modis.imager`, ESA Cloud_cci).
+
 ## Status: alpha (Phases 0–6 of the translation plan)
 
 | Component | COSP v2 origin | Status |
@@ -42,7 +48,7 @@ instrument suite (MISR, PARASOL).
 | MODIS input optics (tau merge, phase partition, 3.7-µm g/w0) | `cosp_optics.F90`, driver MODIS block | ported |
 | MODIS subcolumn retrievals (mask, CTP, tau, phase, size) | `modis_simulator.F90` | ported (incl. ISCCP CTP substitution) |
 | MODIS column means + joint histograms (tau/CTP, tau/Reff, LWP-IWP/Reff) | `modis_simulator.F90`, `cosp_stats.F90:hist2D` | ported |
-| Imager water paths under another product's constants (ESA Cloud_cci CC4CL) | original implementation (McGarragh et al. 2018, Eq. 60) | done (`jcosp.modis.imager`) |
+| Imager water paths under another product's definition (ESA Cloud_cci CC4CL) | not in COSP: original implementation (McGarragh et al. 2018, Eq. 60) on the MODIS subcolumn retrievals | done (`jcosp.modis.imager`) |
 | CALIPSO lidar optics (532 nm, sphere + non-sphere ice) | `cosp_optics.F90:lidar_optics` | ported |
 | CALIPSO ATB + perpendicular channel | `actsim/lidar_simulator.F90` | ported |
 | CALIPSO SR / CFAD / cloud + phase fractions (GOCCP) | `lidar_simulator.F90:COSP_CLDFRAC` | ported (vgrid path) |
@@ -51,6 +57,42 @@ instrument suite (MISR, PARASOL).
 | ATLID / ground lidar variants | `lidar_simulator.F90` | planned |
 | ISCCP (ICARUS: Tb, IR-adjusted CTP, tau/CTP histogram) | `simulator/icarus/icarus.F90` | ported |
 | MISR / PARASOL | — | planned |
+
+## Beyond COSP
+
+Everything in the table marked "ported" is a translation of COSP v2 and is
+meant to reproduce it. Two diagnostics are additions with no COSP
+counterpart; they reuse the ported simulators' subcolumn output and leave
+the ported results unchanged.
+
+- **Warm-rain classification** (`jcosp.classify`): the Mülmenstädt et al.
+  (2020) warm/cold rain and drizzle flags on the CloudSat reflectivity.
+- **Imager water paths under another product's definition**
+  (`jcosp.modis.imager`). A visible/near-infrared imager does not see a
+  column's liquid and ice water paths: its retrieval treats a cloudy pixel
+  as one layer of one phase, converts column optical depth and cloud-top
+  effective radius with `4/3 · tau · r_e · rho / Q_e`, and books the whole
+  column under the cloud-top phase, so liquid beneath an ice top is reported
+  as ice. COSP's MODIS column stage is the MODIS L3 form of this. Other
+  products differ only in the conversion constants, the retrieval limits
+  and the phase rule, which an `ImagerRetrieval` holds;
+  `imager_water_paths` applies one to the subcolumn retrievals the MODIS
+  simulator has already made, at no further radiative-transfer cost. The
+  packaged definition, `CLOUD_CCI`, is ESA Cloud_cci's CC4CL retrieval and
+  gives the all-sky means comparable with its `lwp_allsky` / `iwp_allsky`:
+
+  | | MODIS L3 (`modis_column`, COSP) | Cloud_cci (`CLOUD_CCI`) |
+  | --- | --- | --- |
+  | Liquid conversion | `2/3 · rho_w · tau · r_e` | the same (`Q_e` = 2.0, `rho` = 1000 kg m⁻³) |
+  | Ice conversion | `2/3 · 0.93 rho_w · tau · r_e` | `4/3 · tau · r_e · 916.7 / 2.1` (6 % lower) |
+  | Optical-depth limit | none | `tau` ≤ 256 |
+  | Cloud-top phase | liquid ≥ 0.7, ice ≤ 0.3 of the extinction in the top optical depth; between them "undetermined", in neither path | liquid above 0.5, otherwise ice: every detected subcolumn has a phase |
+  | Reported mean | in-cloud, over that phase's subcolumns | all-sky, over every subcolumn |
+  | Daylight | `sunlit` mask in the driver | solar zenith below 80° (`CLOUD_CCI_MIN_COS_ZENITH`), applied by the host |
+
+  See [docs/usage.md](docs/usage.md) for the call and
+  [docs/translation_notes.md](docs/translation_notes.md) for what is and is
+  not modelled.
 
 ## Design
 
@@ -100,3 +142,6 @@ doi:10.5194/gmd-11-77-2018) alongside it.
 - Mülmenstädt, J., et al. (2015). *GRL* 42, 6502–6509. (warm-rain climatology)
 - Mülmenstädt, J., et al. (2020). *Sci. Adv.* 6, eaaz6433. (COSP warm-rain constraint)
 - Michibata, T., et al. (2019). *GMD* 12, 4297–4315. (CFODD / warm-rain regimes)
+- Pincus, R., et al. (2012). *J. Climate* 25, 4699–4720. (MODIS simulator)
+- McGarragh, G. R., et al. (2018). *AMT* 11, 3397–3431. (CC4CL retrieval; imager water path)
+- Stengel, M., et al. (2020). *ESSD* 12, 41–60. (Cloud_cci v3 products and cloud-top phase)

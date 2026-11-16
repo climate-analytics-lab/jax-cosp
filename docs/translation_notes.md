@@ -257,6 +257,52 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   changes. Cloud detection and phase are hard thresholds (step functions),
   as in the CloudSat flags. Tested via `jax.grad` finiteness.
 
+- `ModisRetrievals` carries three fields COSP's `modis_subcolumn` does not
+  return: `liquid_fraction` (the extinction-weighted liquid share over the
+  top optical depth, which the phase is thresholded from) and
+  `size_if_liquid` / `size_if_ice` (the pseudo-retrieved radius from each
+  phase's trial table, of which `size` is the one the phase selects). They
+  are unmasked (no R_UNDEF in undetected subcolumns; a failed size
+  retrieval is negative) and exist so that a different phase rule can reuse
+  the reflectance inversion (`jcosp/modis/imager.py`). The four COSP fields
+  are unchanged.
+
+## Imager water paths (`jcosp/modis/imager.py`): not in COSP
+
+- Original implementation, with no Fortran counterpart. It restates the
+  MODIS subcolumn retrievals under another imager product's definition
+  (`ImagerRetrieval`); `CLOUD_CCI` is ESA Cloud_cci's CC4CL (McGarragh et
+  al. 2018): conversion `4/3 tau r_e rho / Q_e` (their Eq. 60) with
+  `rho` = 1000 / 916.7 kg m⁻³ and `Q_e` = 2.0 / 2.1, `tau` ≤ 256 and radii
+  within 1-35 µm (liquid) and 4-92 µm (ice) (their Tables 3 and 4).
+- **Phase.** Cloud_cci v3 gives every cloudy pixel one of two phases, from
+  a network trained on CALIOP's cloud-top phase (Stengel et al. 2020). The
+  network is not modelled: a subcolumn is liquid when liquid holds more
+  than half of the extinction in the top optical depth (the quantity the
+  MODIS simulator thresholds at 0.7 / 0.3), and ice otherwise. Subcolumns
+  MODIS calls "undetermined" therefore contribute here and not to
+  `modis_column`'s `lwp` / `iwp`.
+- **Detection and size are the MODIS simulator's.** A subcolumn is cloudy
+  at a column optical depth of at least `MODIS_MIN_OPTICAL_THICKNESS`
+  (CC4CL's own cloud mask is a neural network, not modelled), and the
+  radius is the 3.7-µm pseudo-retrieval over the MODIS trial radii (4-30
+  and 5-90 µm), which lie inside CC4CL's limits, so those limits never
+  bind. A subcolumn whose size retrieval failed counts as zero.
+- **All-sky means.** The result is the mean over every subcolumn, with
+  clear ones and those of the other phase counting as zero (the product's
+  `lwp_allsky` / `iwp_allsky`), where `modis_column` reports in-cloud
+  means. No R_UNDEF is returned.
+- **Daylight is the host's.** Nothing here is day-masked (the subcolumn
+  stage is not, unlike the column stage in `simulate_modis`). CC4CL
+  retrieves below a solar zenith angle of 80°
+  (`CLOUD_CCI_MIN_COS_ZENITH`); the host multiplies by that mask and
+  averages it alongside. The product's overpass-time sampling is not
+  modelled either.
+- **Differentiability.** Detection and phase are hard steps. Masked-out
+  subcolumns are zeroed before the product is formed, because their `tau`
+  is R_UNDEF and a masked product of two such values overflows in reverse
+  mode. Tested via `jax.grad` finiteness.
+
 ## CFODD / warm-rain occurrence (`jcosp/modis/cfodd.py`)
 
 - Port of `cosp_stats.F90:COSP_DIAG_WARMRAIN` ((c) 2018 RIAM Kyushu

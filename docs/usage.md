@@ -160,7 +160,10 @@ physics = echam_physics(enable_cosp=True, cosp_ncolumns=40)
 
 which emits `cosp_warm_rain`, `cosp_cold_rain`, `cosp_warm_drizzle`,
 `cosp_cold_drizzle`, `cosp_pia` and `cosp_precip_cover.*` in the model
-output, time-averaged when `output_averages=True`. Install the dependency
+output, time-averaged when `output_averages=True`. With `cosp_modis=True`
+it also emits the MODIS fields and the Cloud_cci water paths `lwpcci` /
+`iwpcci` with their daylight companion `cosp_sunlit_cci` (the daytime mean
+is `mean(lwpcci) / mean(cosp_sunlit_cci)`). Install the dependency
 with `pip install jcm[cosp]`. The term's module docstring documents the
 input-mapping approximations (no separate convective cloud fraction in jcm;
 convective precip profile is a labelled stopgap).

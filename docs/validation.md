@@ -37,9 +37,22 @@ PREC_SCOPS, COSP_CHANGE_VERTICAL_GRID, the quickbeam attenuation gate loops
 (both radar orientations), the Re-quantization index arithmetic, and infind
 temperature binning.
 
+The additions with no Fortran counterpart (`jcosp/classify.py`,
+`jcosp/modis/imager.py`) cannot be checked this way and rest on the property
+tests below.
+
 ## 3. Physical/property tests
 
 Mie Rayleigh limits, DSD mass closure, calc_Re/DSD moment round-trips,
 Z-scale linearity in ρq, CFAD normalization, warm/cold rain classification
 on constructed cases, jit/grad finiteness through the full pipeline, and
 fixed-key reproducibility.
+
+For the imager water paths (`jcosp/modis/imager_test.py`): an all-liquid
+overcast scene reproduces `modis_column`'s liquid water path (the two
+conversions coincide); an all-ice one follows the product's constants;
+liquid beneath an ice top is reported as ice at the ice-table size; a
+random mixed-phase scene matches an independent NumPy evaluation and books
+the subcolumns MODIS leaves undetermined; the optical depth is capped;
+clear sky is zero; and `jax.grad` is finite through the R_UNDEF-masked
+subcolumns.
