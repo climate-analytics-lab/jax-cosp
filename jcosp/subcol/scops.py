@@ -164,10 +164,26 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
     confined to the response of the cloud just below a convective layer to
     the convective fraction.
 
-    The mean over subcolumns is removed at the end, so the weights sum to
-    ``ncol`` to first order (the number of subcolumns does not change) and
-    a statistic that is the same for every subcolumn has exactly zero
-    derivative. ``floor`` bounds the weight a rare state can receive.
+    Each subcolumn's score is taken relative to a baseline, so the weights
+    sum to ``ncol`` to first order (the number of subcolumns does not
+    change) and a statistic that is the same for every subcolumn has
+    exactly zero derivative. The baseline has to leave the estimate
+    unbiased, and the two sources of a decision differ in what does:
+
+    - Decisions made by a subcolumn's own random draws (the thresholds of
+      random and maximum-random overlap) are independent between
+      subcolumns, and their baseline is the mean score of the *other*
+      subcolumns. The ensemble mean including the subcolumn itself is
+      correlated with its statistic and shrinks every derivative by
+      ``(ncol - 1) / ncol``; leaving it out is the same as scaling the
+      centred score by ``ncol / (ncol - 1)``. A single subcolumn has no
+      others, so its score is used as it is (unbiased, and not zero-sum).
+    - Decisions made by the box positions (convective pinning, and every
+      threshold of maximum overlap) come from a fixed stratified set, whose
+      mean score is a constant close to zero rather than a random variable.
+      It is removed as it is.
+
+    ``floor`` bounds the weight a rare state can receive.
     """
     ncol = u_levels.shape[1]
     dtype = u_levels.dtype
@@ -195,7 +211,7 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
         return (prob - sg(prob)) / sg(jnp.maximum(prob, floor))
 
     def step(carry, inputs):
-        threshold, lo, hi, known, box_lo, box_hi, acc = carry
+        threshold, lo, hi, known, box_lo, box_hi, acc_box, acc_draw = carry
         conv_k, tca_k, tca_km1, ran_k = inputs
         conv_b = jnp.broadcast_to(conv_k, shape)
         tca_b = jnp.broadcast_to(tca_k, shape)
@@ -224,7 +240,7 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
 
         # Pinned to convective cloud, or not: the box position is uniform
         # on [box_lo, box_hi) given the levels above.
-        acc = acc + term(share(box_lo, box_hi, zero, conv_b), maxocc)
+        acc_box = acc_box + term(share(box_lo, box_hi, zero, conv_b), maxocc)
         box_hi = jnp.where(maxocc, jnp.minimum(box_hi, conv_b), box_hi)
         box_lo = jnp.where(maxocc, box_lo, jnp.maximum(box_lo, conv_b))
 
@@ -234,7 +250,7 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
         free = ~maxocc & ~known
         keep_lo = zero if overlap == 1 else conv_b
         if overlap != 1:
-            acc = acc + jnp.where(
+            acc_draw = acc_draw + jnp.where(
                 free, term(share(lo, hi, keep_lo, keep_hi), maxosc), 0.0)
         kept_lo = jnp.maximum(lo, keep_lo)
         kept_hi = jnp.minimum(hi, keep_hi)
@@ -243,7 +259,8 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
         # construction under maximum-random overlap; under maximum overlap
         # it is compared with it. A redrawn one is uniform above its floor.
         if overlap == 1:
-            acc = acc + jnp.where(
+            # The threshold is the box position: a stratified decision.
+            acc_box = acc_box + jnp.where(
                 free, term(share(kept_lo, kept_hi, zero, tca_b), cloudy), 0.0)
             kept_lo, kept_hi = (jnp.where(cloudy, kept_lo,
                                           jnp.maximum(kept_lo, tca_b)),
@@ -251,7 +268,7 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
                                           jnp.minimum(kept_hi, tca_b),
                                           kept_hi))
         fresh = ~maxocc & ~maxosc
-        acc = acc + jnp.where(
+        acc_draw = acc_draw + jnp.where(
             fresh, term(share(threshold_min, one, zero, tca_b), cloudy), 0.0)
         fresh_lo = jnp.where(cloudy, threshold_min,
                              jnp.maximum(threshold_min, tca_b))
@@ -260,17 +277,26 @@ def _weight_surrogate(cloud_frac, conv_frac, u_init, u_levels, overlap, floor):
         lo = jnp.where(maxosc, kept_lo, fresh_lo)
         hi = jnp.where(maxosc, kept_hi, fresh_hi)
         known = jnp.where(maxocc, True, jnp.where(maxosc, known, False))
-        return (threshold, lo, hi, known, box_lo, box_hi, acc), None
+        return (threshold, lo, hi, known, box_lo, box_hi,
+                acc_box, acc_draw), None
 
     zeros = jnp.zeros(shape, dtype)
     ones = jnp.ones(shape, dtype)
     init = (thresh0.astype(dtype), zeros, ones, jnp.zeros(shape, bool),
-            zeros, ones, zeros)
+            zeros, ones, zeros, zeros)
     carry, _ = lax.scan(
         step, init,
         (conv_frac[:, None], tca[:, None], tca_above[:, None], u_levels))
-    acc = carry[-1]
-    return 1.0 + acc - jnp.mean(acc, axis=0, keepdims=True)
+    acc_box, acc_draw = carry[-2], carry[-1]
+    box = acc_box - jnp.mean(acc_box, axis=0, keepdims=True)
+    if ncol > 1:
+        # Leave-one-out baseline: s_i - mean of the others
+        #   = (s_i - mean of all) * ncol / (ncol - 1).
+        draw = ((acc_draw - jnp.mean(acc_draw, axis=0, keepdims=True))
+                * (ncol / (ncol - 1.0)))
+    else:
+        draw = acc_draw
+    return 1.0 + box + draw
 
 
 def subcolumn_weights(cloud_frac, conv_frac, u_init, u_levels,

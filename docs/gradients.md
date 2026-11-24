@@ -86,18 +86,33 @@ subcolumn carries its threshold down through contiguous cloud, so the
 log-probability is accumulated by tracking the interval that threshold is
 uniform on given the levels above.
 
-Measured against difference quotients of 3x10^5-subcolumn ensembles, for
-100-subcolumn ensembles on a two-deck profile:
+Each subcolumn's score is taken relative to a baseline, so that the weights
+sum to the number of subcolumns and a statistic that is the same in every
+subcolumn has no derivative. For the decisions a subcolumn's own random
+draws make, the baseline is the mean score of the *other* subcolumns. The
+mean over all of them, the subcolumn's own included, is correlated with its
+statistic and would shrink every derivative by `(ncol - 1) / ncol`: 1 % at
+100 subcolumns, 5 % at 20, and a systematic error that no amount of
+averaging over gridpoints removes. The decisions made by SCOPS's fixed box
+positions (convective pinning, and all of maximum overlap) are stratified
+rather than drawn, and their mean score is removed as it is.
+
+Measured against difference quotients of 4x10^5-subcolumn ensembles (which
+carry about 3 % noise of their own), for 100-subcolumn ensembles on a
+two-deck profile:
 
 | Change | Statistic | Expectation | Estimate (mean of 300 draws +- std of one) |
 |---|---|---|---|
-| all cloud fractions scaled | total cover | +0.522 | +0.516 +- 0.05 |
-| | fraction with column tau >= 3 | +0.526 | +0.529 +- 0.04 |
-| | mean column tau | +4.56 | +4.52 +- 0.52 |
-| one level | that level's cover | +0.962 | +0.999 +- 0.28 |
+| all cloud fractions scaled | total cover | +0.522 | +0.521 +- 0.05 |
+| | fraction with column tau >= 3 | +0.526 | +0.534 +- 0.04 |
+| | mean column tau | +4.56 | +4.57 +- 0.53 |
+| one level | that level's cover | +0.962 | +1.009 +- 0.28 |
 | | total cover | 0.000 | -0.002 +- 0.13 |
 
-(maximum-random overlap; random overlap agrees equally well.) For MODIS
+(maximum-random overlap; random overlap agrees equally well.) The exact
+check is the one-level case, where the derivative of the cover in the cloud
+fraction is 1: the estimate averages to 1 with one, two or five subcolumns
+(`weights_test.py`). For MODIS
 total cloud fraction against a scaling of the model cloud fraction, the
 derivative from 50 000 subcolumns agrees with the difference quotient to
 within its 1 % noise.
@@ -116,6 +131,9 @@ Things to know:
 - **Maximum overlap** (`overlap=1`) uses a fixed stratified set of
   thresholds rather than draws, so one ensemble gives one deterministic
   estimate: good for coherent changes, coarse for single levels.
+- **A single subcolumn** (`ncol = 1`) has no others to take a baseline from:
+  its score is used as it is, which is unbiased but leaves a statistic that
+  is constant across subcolumns with a noisy derivative instead of none.
 - **A cloud fraction of exactly zero has no sampled cloud to weight**, so
   the derivative with respect to it is zero from below and missing from
   above.

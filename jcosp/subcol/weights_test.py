@@ -187,6 +187,32 @@ class SubcolumnWeightTest(unittest.TestCase):
     def test_derivative_of_expectation_with_convection(self):
         self._check_against_expectation(overlap=3, convective=True)
 
+    def test_small_ensembles_are_unbiased(self):
+        # One level of independent draws: the cover's derivative in the
+        # cloud fraction is 1 whatever the ensemble size. A baseline that
+        # includes the subcolumn's own score gives (ncol - 1) / ncol
+        # instead: half with two subcolumns, nothing at all with one.
+        tca, conv = jnp.asarray([0.5]), jnp.zeros(1)
+        keys = jax.random.split(jax.random.PRNGKey(7), 40_000)
+        for overlap in (2, 3):
+            for ncol in (1, 2, 5):
+
+                @jax.jit
+                def estimate(key):
+                    u0, ul = generate_uniforms(key, 1, ncol)
+                    cloudy = scops_from_uniforms(
+                        tca, conv, u0, ul, overlap)[0] > 0
+                    return jax.grad(lambda t: jnp.mean(
+                        subcolumn_weights(t, conv, u0, ul, overlap)
+                        * cloudy))(tca)[0]
+
+                est = np.asarray(jax.vmap(estimate)(keys))
+                stderr = est.std() / np.sqrt(est.size)
+                self.assertLess(
+                    abs(est.mean() - 1.0), 4.0 * stderr,
+                    msg=f"overlap {overlap}, {ncol} subcolumns: "
+                        f"{est.mean():+.4f} +- {stderr:.4f}")
+
     def test_maximum_overlap_coherent_change(self):
         # Under maximum overlap the subcolumn thresholds are a fixed
         # stratified set, so a single ensemble is one deterministic estimate
