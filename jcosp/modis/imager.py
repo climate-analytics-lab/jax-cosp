@@ -33,7 +33,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config
+from jcosp import config, surrogate
 from jcosp.modis.simulator import ModisRetrievals
 
 
@@ -76,7 +76,8 @@ CLOUD_CCI_MIN_COS_ZENITH = 0.17364818
 
 
 def imager_water_paths(sub: ModisRetrievals,
-                       retrieval: ImagerRetrieval = CLOUD_CCI):
+                       retrieval: ImagerRetrieval = CLOUD_CCI, weights=None,
+                       smoothing=surrogate.DEFAULT_SMOOTHING):
     """All-sky liquid and ice water paths of an imager retrieval.
 
     Each subcolumn the MODIS simulator detects (column optical depth of at
@@ -92,10 +93,12 @@ def imager_water_paths(sub: ModisRetrievals,
     (``CLOUD_CCI_MIN_COS_ZENITH`` for Cloud_cci): the mean over the daylight
     hours is the time mean of a path divided by the time mean of the mask.
 
-    The detection and phase tests are hard steps, so the result carries no
-    derivative across them. Masked-out subcolumns are zeroed BEFORE the
-    product is formed (their ``tau`` is ``R_UNDEF``), so values and
-    derivatives are finite everywhere.
+    The detection and phase tests are hard steps in the value. Their
+    derivatives are those of smooth steps of the widths in ``smoothing``
+    (``optical_depth``, ``phase_fraction``), so that a path responds to a
+    subcolumn approaching the detection limit or the other phase, and
+    through ``weights`` (the SCOPS subcolumn weight) to the cloud fraction.
+    Values and derivatives are finite everywhere.
 
     Parameters
     ----------
@@ -103,24 +106,37 @@ def imager_water_paths(sub: ModisRetrievals,
         Per-subcolumn retrievals, fields ``(ncol, *batch)``.
     retrieval : ImagerRetrieval
         The product's constants.
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``).
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivatives; no value depends on it.
 
     Returns
     -------
     (liquid_water_path, ice_water_path) : each ``(*batch)``, kg m-2.
     """
-    detected = sub.phase != config.MODIS_PHASE_NONE
-    liquid = sub.liquid_fraction > retrieval.liquid_fraction
-    tau = jnp.minimum(jnp.where(detected, sub.tau, 0.0), retrieval.tau_max)
+    dtype = sub.liquid_fraction.dtype
+    if sub.tau_all is None:
+        detected = (sub.phase != config.MODIS_PHASE_NONE).astype(dtype)
+        tau = jnp.where(detected > 0.5, sub.tau, 0.0)
+    else:
+        tau = sub.tau_all
+        detected = surrogate.ge(tau, config.MODIS_MIN_OPTICAL_THICKNESS,
+                                smoothing.optical_depth)
+    liquid = surrogate.gt(sub.liquid_fraction, retrieval.liquid_fraction,
+                          smoothing.phase_fraction)
+    tau = jnp.minimum(tau, retrieval.tau_max)
 
     def path(of_phase, size, limits, density, extinction):
         # A failed size retrieval is negative (MODIS_RE_FILL).
-        use = detected & of_phase & (size > 0.0)
-        r_e = jnp.clip(jnp.where(use, size, 0.0), *limits)
-        cells = (4.0 / 3.0) * tau * r_e * (density / extinction)
-        return jnp.mean(jnp.where(use, cells, 0.0), axis=0)
+        use = detected * of_phase * (size > 0.0)
+        r_e = jnp.clip(size, *limits)
+        cells = surrogate.gated(
+            use, (4.0 / 3.0) * tau * r_e * (density / extinction))
+        return jnp.mean(cells if weights is None else weights * cells, axis=0)
 
     lwp = path(liquid, sub.size_if_liquid, retrieval.size_liquid,
                retrieval.density_liquid, retrieval.extinction_liquid)
-    iwp = path(~liquid, sub.size_if_ice, retrieval.size_ice,
+    iwp = path(1.0 - liquid, sub.size_if_ice, retrieval.size_ice,
                retrieval.density_ice, retrieval.extinction_ice)
     return lwp, iwp

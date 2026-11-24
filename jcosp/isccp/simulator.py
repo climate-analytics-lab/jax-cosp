@@ -47,7 +47,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import lax
 
-from jcosp import config, stats
+from jcosp import config, stats, surrogate
 from jcosp.constants import R_UNDEF
 
 
@@ -340,7 +340,8 @@ class IsccpColumn(NamedTuple):
 
 
 def isccp_column(boxtau, boxptop, sunlit, boxttop,
-                 top_height: int = 1) -> IsccpColumn:
+                 top_height: int = 1, weights=None,
+                 smoothing=surrogate.DEFAULT_SMOOTHING) -> IsccpColumn:
     """Aggregate subcolumn ISCCP retrievals to column statistics.
 
     Port of icarus.F90 ``ICARUS_COLUMN``. As at the Fortran call sites,
@@ -349,15 +350,22 @@ def isccp_column(boxtau, boxptop, sunlit, boxttop,
     be None (all points sunlit). ``meantb`` is reported for night points
     too (the 10.5-um stack does not need daylight); everything else is
     R_UNDEF at night unless ``top_height = 3``.
+
+    ``weights`` is the (ncol, *batch) SCOPS subcolumn weight
+    (``jcosp.subcol.scops.subcolumn_weights``), through which the
+    statistics respond to the cloud fraction. ``smoothing`` gives the
+    cloud-area limit (tau = 0.3) and the histogram bin edges the
+    derivatives of smooth steps; no value depends on either.
     """
     dtype = boxtau.dtype
     ncol = boxtau.shape[0]
     batch_shape = boxtau.shape[1:]
     tauchk = config.ISCCP_TAUCHK
 
+    one = jnp.ones((), dtype) if weights is None else weights
     radiative = top_height in (1, 3)
     if radiative:
-        meantb = jnp.sum(boxttop, axis=0) / ncol
+        meantb = jnp.sum(one * boxttop, axis=0) / ncol
     else:
         meantb = jnp.full(batch_shape, R_UNDEF, dtype)
 
@@ -367,21 +375,28 @@ def isccp_column(boxtau, boxptop, sunlit, boxttop,
         active = (jnp.ones(batch_shape, bool) if sunlit is None
                   else jnp.asarray(sunlit) > 0)
 
+    # Undetected boxes hold R_UNDEF, far below the limit: their step is 0
+    # with no derivative. Detected ones cross the limit smoothly.
     box_cloudy = (boxtau > tauchk) & (boxptop > 0.0)
-    thick = box_cloudy & (boxtau > config.ISCCP_TAUMIN)
+    thick = box_cloudy * surrogate.gt(boxtau, config.ISCCP_TAUMIN,
+                                      smoothing.optical_depth)
 
     fq = stats.hist2d(boxtau, boxptop,
                       jnp.asarray(config.ISCCP_HIST_TAU, dtype),
-                      jnp.asarray(config.ISCCP_HIST_PRES, dtype)) / ncol
+                      jnp.asarray(config.ISCCP_HIST_PRES, dtype),
+                      weights=weights, width=smoothing.histogram) / ncol
 
-    totalcldarea = jnp.sum(thick, axis=0).astype(dtype) / ncol
+    totalcldarea = jnp.sum(one * thick, axis=0).astype(dtype) / ncol
     # Visible albedo fit alpha(tau) = tau^0.895 / (tau^0.895 + 6.82); the
     # clamp keeps the masked-out cells (boxtau = R_UNDEF) out of the
     # fractional-power gradient graph.
     tau_safe = jnp.maximum(boxtau, config.ISCCP_TAUMIN) ** 0.895
-    albedocld = jnp.where(thick, tau_safe / (tau_safe + 6.82), 0.0)
-    meanalbedocld = jnp.sum(albedocld, axis=0) / ncol
-    meanptop = jnp.sum(jnp.where(thick, boxptop, 0.0), axis=0) / ncol
+    albedocld = surrogate.gated(thick, tau_safe / (tau_safe + 6.82))
+    meanalbedocld = jnp.sum(one * albedocld, axis=0) / ncol
+    # R_UNDEF tops belong to undetected boxes, which the step leaves out
+    # with no derivative; zero them so the fill cannot scale one.
+    ptop_known = jnp.where(box_cloudy, boxptop, 0.0)
+    meanptop = jnp.sum(one * surrogate.gated(thick, ptop_known), axis=0) / ncol
 
     # Cloudy-area means; totalcldarea is still the 0-1 fraction here. The
     # mean albedo converts back to a mean optical thickness through the
@@ -389,7 +404,10 @@ def isccp_column(boxtau, boxptop, sunlit, boxttop,
     have_cloud = totalcldarea > 0.0
     area_safe = jnp.maximum(totalcldarea, 1.0 / (2 * ncol))
     alb = meanalbedocld / area_safe
-    alb_safe = jnp.clip(alb, 1e-30, 1.0 - 1e-12)
+    # Cloud-free points (alb = 0, masked below) take a mid-range value: the
+    # derivative of the inverse fit at the 1e-30 clamp overflows float32
+    # and would turn the masked branch's zero derivative into NaN.
+    alb_safe = jnp.clip(jnp.where(have_cloud, alb, 0.5), 1e-30, 1.0 - 1e-12)
     meanptop = jnp.where(have_cloud, 100.0 * meanptop / area_safe, R_UNDEF)
     meanalbedocld = jnp.where(have_cloud, alb, R_UNDEF)
     meantaucld = jnp.where(

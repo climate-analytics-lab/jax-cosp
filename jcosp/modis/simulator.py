@@ -34,7 +34,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import lax
 
-from jcosp import config, stats
+from jcosp import config, stats, surrogate
 from jcosp.constants import R_UNDEF
 from jcosp.modis import optics
 
@@ -262,6 +262,12 @@ class ModisRetrievals(NamedTuple):
     liquid_fraction: jnp.ndarray     # liquid share of the top-of-cloud extinction
     size_if_liquid: jnp.ndarray      # radius from the liquid table (m);
     size_if_ice: jnp.ndarray         # ... and the ice table; < 0 where failed
+    # The same, for the column optical thickness and cloud-top pressure:
+    # their values in every subcolumn, detected or not. The column stage
+    # differentiates the detection limit and the bin edges through these;
+    # the R_UNDEF-filled fields above have no derivative across them.
+    tau_all: jnp.ndarray | None = None  # column 0.67-um optical thickness
+    ctp_all: jnp.ndarray | None = None  # cloud-top pressure (Pa)
 
 
 def modis_subcolumn(pressure_half, tau, liq_frac, g, w0,
@@ -311,6 +317,7 @@ def modis_subcolumn(pressure_half, tau, liq_frac, g, w0,
     size = 1.0e-6 * jnp.where(phase == config.MODIS_PHASE_ICE, size_i, size_w)
 
     # Fill the non-cloudy subcolumns.
+    tau_all, ctp_all = retrieved_tau, ctp
     ctp = jnp.where(cloud_mask, ctp, R_UNDEF)
     phase = jnp.where(cloud_mask, phase, config.MODIS_PHASE_NONE)
     size = jnp.where(cloud_mask, size, R_UNDEF)
@@ -320,15 +327,16 @@ def modis_subcolumn(pressure_half, tau, liq_frac, g, w0,
                      1.0e-6 * config.MODIS_RE_FILL, size)
 
     if isccp_ctp is not None:
-        ctp = jnp.where(
-            cloud_mask & (ctp > config.MODIS_CO2SLICING_PRESSURE_LIMIT),
-            isccp_ctp, ctp)
+        low = cloud_mask & (ctp > config.MODIS_CO2SLICING_PRESSURE_LIMIT)
+        ctp = jnp.where(low, isccp_ctp, ctp)
+        ctp_all = jnp.where(low, isccp_ctp, ctp_all)
 
     return ModisRetrievals(phase=phase, cloud_top_pressure=ctp,
                            tau=retrieved_tau, size=size,
                            liquid_fraction=liq_fraction,
                            size_if_liquid=1.0e-6 * size_w,
-                           size_if_ice=1.0e-6 * size_i)
+                           size_if_ice=1.0e-6 * size_i,
+                           tau_all=tau_all, ctp_all=ctp_all)
 
 
 class ModisColumn(NamedTuple):
@@ -367,90 +375,131 @@ class ModisColumn(NamedTuple):
     iwp_vs_reff_ice: jnp.ndarray  # (niwp, nreffice, *batch) (%)
 
 
-def modis_column(phase, ctp, tau, size) -> ModisColumn:
+def modis_column(phase, ctp, tau, size, retrievals: ModisRetrievals = None,
+                 weights=None,
+                 smoothing=surrogate.DEFAULT_SMOOTHING) -> ModisColumn:
     """Aggregate subcolumn retrievals to column statistics (modis_column).
 
-    All inputs are (ncol, *batch) retrieval fields from
-    :func:`modis_subcolumn` (``size`` in metres).
+    ``phase``, ``ctp``, ``tau`` and ``size`` are the (ncol, *batch)
+    retrieval fields of :func:`modis_subcolumn` (``size`` in metres).
+
+    Every statistic here is a count of subcolumns, or a mean over the
+    subcolumns counted, and its value is that of the Fortran. With the
+    full ``retrievals`` of :func:`modis_subcolumn` the tests that select
+    the subcolumns (detection at tau = 0.3, the cloud-top phase, the
+    high/low pressure limits and the histogram bin edges) also carry the
+    derivatives of smooth steps of the widths in ``smoothing``, taken on
+    the retrieved quantities of every subcolumn; without it they are the
+    hard tests on the R_UNDEF-filled fields and the counts have no
+    derivative. ``weights`` is the (ncol, *batch) SCOPS subcolumn weight
+    (``jcosp.subcol.scops.subcolumn_weights``), through which the
+    statistics respond to the cloud fraction. No value depends on
+    ``retrievals``, ``weights`` or ``smoothing``.
     """
     dtype = tau.dtype
     ncol = phase.shape[0]
+    one = jnp.ones((), dtype) if weights is None else weights
 
-    valid = size > 0.0
-    cloud = (phase != config.MODIS_PHASE_NONE) & valid
-    water = (phase == config.MODIS_PHASE_LIQUID) & valid
-    ice = (phase == config.MODIS_PHASE_ICE) & valid
+    if retrievals is None or retrievals.tau_all is None:
+        # Hard selections from the filled fields: no derivative across them.
+        detected = (phase != config.MODIS_PHASE_NONE).astype(dtype)
+        is_liquid = (phase == config.MODIS_PHASE_LIQUID).astype(dtype)
+        is_ice = (phase == config.MODIS_PHASE_ICE).astype(dtype)
+        size_w = size_i = size
+        valid_w = valid_i = (size > 0.0).astype(dtype)
+    else:
+        sub = retrievals
+        tau, ctp = sub.tau_all, sub.ctp_all
+        detected = surrogate.ge(tau, config.MODIS_MIN_OPTICAL_THICKNESS,
+                                smoothing.optical_depth)
+        thresh = config.MODIS_PHASE_DISCRIMINATION_THRESHOLD
+        is_liquid = surrogate.ge(sub.liquid_fraction, thresh,
+                                 smoothing.phase_fraction)
+        is_ice = surrogate.le(sub.liquid_fraction, 1.0 - thresh,
+                              smoothing.phase_fraction)
+        # Liquid and undetermined subcolumns are sized from the liquid
+        # table, ice ones from the ice table; a failed retrieval is < 0.
+        size_w, size_i = sub.size_if_liquid, sub.size_if_ice
+        valid_w = (size_w > 0.0).astype(dtype)
+        valid_i = (size_i > 0.0).astype(dtype)
 
-    n_tot = jnp.sum(cloud, axis=0).astype(dtype)
-    n_wat = jnp.sum(water, axis=0).astype(dtype)
-    n_ice = jnp.sum(ice, axis=0).astype(dtype)
-    n_high = jnp.sum(
-        cloud & (ctp <= config.MODIS_HIGH_CLOUD_PRESSURE_LIMIT),
-        axis=0).astype(dtype)
-    n_low = jnp.sum(
-        cloud & (ctp > config.MODIS_LOW_CLOUD_PRESSURE_LIMIT),
-        axis=0).astype(dtype)
+    water = detected * is_liquid * valid_w
+    ice = detected * is_ice * valid_i
+    cloud = detected * (is_ice * valid_i + (1.0 - is_ice) * valid_w)
+
+    def count(gate):
+        return jnp.sum(one * gate, axis=0).astype(dtype)
+
+    n_tot = count(cloud)
+    n_wat = count(water)
+    n_ice = count(ice)
+    n_high = count(cloud * surrogate.le(
+        ctp, config.MODIS_HIGH_CLOUD_PRESSURE_LIMIT, smoothing.pressure))
+    n_low = count(cloud * surrogate.gt(
+        ctp, config.MODIS_LOW_CLOUD_PRESSURE_LIMIT, smoothing.pressure))
     n_mid = n_tot - n_high - n_low
 
-    def msum(x, mask):
-        return jnp.sum(jnp.where(mask, x, 0.0), axis=0)
+    def msum(x, gate):
+        return jnp.sum(one * surrogate.gated(gate, x), axis=0)
 
     def mean_or_undef(total, n):
         return jnp.where(n > 0.0, total / jnp.maximum(n, 1.0), R_UNDEF)
 
-    # log10(|tau|): only masked-in cells (tau >= 0.3) contribute; the clamp
-    # keeps the masked-out cells (tau = R_UNDEF, |.| huge but finite; or 0)
-    # out of the gradient graph's singular range.
+    # log10(|tau|): only selected cells (tau >= 0.3) contribute; the clamp
+    # keeps the others (tau = R_UNDEF, |.| huge but finite; or 0) out of
+    # the gradient graph's singular range.
     logtau = jnp.log10(jnp.maximum(jnp.abs(tau), 1e-30))
-    lwp_cells = config.MODIS_LWP_CONVERSION * size * tau
+    lwp_cells = config.MODIS_LWP_CONVERSION * size_w * tau
     iwp_cells = (config.MODIS_LWP_CONVERSION * config.MODIS_ICE_DENSITY
-                 * size * tau)
+                 * size_i * tau)
 
     tau_total = mean_or_undef(msum(tau, cloud), n_tot)
     tau_total_log = mean_or_undef(msum(logtau, cloud), n_tot)
     tau_liquid = mean_or_undef(msum(tau, water), n_wat)
     tau_liquid_log = mean_or_undef(msum(logtau, water), n_wat)
-    size_liquid = mean_or_undef(msum(size, water), n_wat)
+    size_liquid = mean_or_undef(msum(size_w, water), n_wat)
     lwp = mean_or_undef(msum(lwp_cells, water), n_wat)
     tau_ice = mean_or_undef(msum(tau, ice), n_ice)
     tau_ice_log = mean_or_undef(msum(logtau, ice), n_ice)
-    size_ice = mean_or_undef(msum(size, ice), n_ice)
+    size_ice = mean_or_undef(msum(size_i, ice), n_ice)
     iwp = mean_or_undef(msum(iwp_cells, ice), n_ice)
     # FIXED UPSTREAM BUG (docs/translation_notes.md): the Fortran divides by
     # max(1, count), so a cloud-free sunlit point reports mean CTP = 0 Pa
     # rather than "undefined". Report R_UNDEF like every other mean here.
-    ctp_mean = mean_or_undef(msum(ctp, cloud), n_tot)
+    # A low cloud whose ISCCP cloud top is missing carries R_UNDEF here and
+    # is summed as such, as in the Fortran; that fill is added outside the
+    # differentiated product so it cannot scale a derivative.
+    ctp_known = jnp.where(ctp == R_UNDEF, 0.0, ctp)
+    ctp_fill = lax.stop_gradient(jnp.where(cloud > 0.5, ctp - ctp_known, 0.0))
+    ctp_sum = jnp.sum(one * surrogate.gated(cloud, ctp_known) + ctp_fill,
+                      axis=0)
+    ctp_mean = mean_or_undef(ctp_sum, n_tot)
 
-    # Histogram working copies: -999 in undetected subcolumns; the Reff
-    # copies keep R_UNDEF there (the Fortran's where-block does not touch
-    # them), which the bins ignore either way.
-    tau_w = jnp.where(cloud, tau, -999.0)
-    ctp_w = jnp.where(cloud, ctp, -999.0)
-    tau_liq_w = jnp.where(cloud, jnp.where(water, tau, R_UNDEF), -999.0)
-    tau_ice_w = jnp.where(cloud, jnp.where(ice, tau, R_UNDEF), -999.0)
-    lwp_w = jnp.where(cloud, jnp.where(water, lwp_cells, R_UNDEF), -999.0)
-    iwp_w = jnp.where(cloud, jnp.where(ice, iwp_cells, R_UNDEF), -999.0)
-    reff_liq_w = jnp.where(water, size, R_UNDEF)
-    reff_ice_w = jnp.where(ice, size, R_UNDEF)
-
+    # Joint histograms. The Fortran histograms working copies holding -999
+    # (or R_UNDEF) in the subcolumns a histogram leaves out, values no bin
+    # contains; here each histogram takes its selection as the weight of
+    # the sample instead, which counts the same subcolumns.
     scale = 100.0 / ncol
     tau_bins = jnp.asarray(config.MODIS_HIST_TAU, dtype)
     pres_bins = jnp.asarray(config.MODIS_HIST_PRES, dtype)
     reff_liq_bins = jnp.asarray(config.MODIS_HIST_REFF_LIQ, dtype)
     reff_ice_bins = jnp.asarray(config.MODIS_HIST_REFF_ICE, dtype)
-    tau_vs_ctp = scale * stats.hist2d(tau_w, ctp_w, tau_bins, pres_bins)
-    tau_vs_ctp_liq = scale * stats.hist2d(tau_liq_w, ctp_w, tau_bins, pres_bins)
-    tau_vs_ctp_ice = scale * stats.hist2d(tau_ice_w, ctp_w, tau_bins, pres_bins)
-    lwp_vs_reff_liq = scale * stats.hist2d(
-        lwp_w, reff_liq_w, jnp.asarray(config.MODIS_HIST_LWP, dtype),
-        reff_liq_bins)
-    iwp_vs_reff_ice = scale * stats.hist2d(
-        iwp_w, reff_ice_w, jnp.asarray(config.MODIS_HIST_IWP, dtype),
-        reff_ice_bins)
-    tau_vs_reff_ice = scale * stats.hist2d(tau_w, reff_ice_w, tau_bins,
-                                           reff_ice_bins)
-    tau_vs_reff_liq = scale * stats.hist2d(tau_w, reff_liq_w, tau_bins,
-                                           reff_liq_bins)
+
+    def hist(x, y, xbins, ybins, gate):
+        return scale * stats.hist2d(x, y, xbins, ybins, weights=one * gate,
+                                    width=smoothing.histogram)
+
+    tau_vs_ctp = hist(tau, ctp, tau_bins, pres_bins, cloud)
+    tau_vs_ctp_liq = hist(tau, ctp, tau_bins, pres_bins, water)
+    tau_vs_ctp_ice = hist(tau, ctp, tau_bins, pres_bins, ice)
+    lwp_vs_reff_liq = hist(
+        lwp_cells, size_w, jnp.asarray(config.MODIS_HIST_LWP, dtype),
+        reff_liq_bins, water)
+    iwp_vs_reff_ice = hist(
+        iwp_cells, size_i, jnp.asarray(config.MODIS_HIST_IWP, dtype),
+        reff_ice_bins, ice)
+    tau_vs_reff_ice = hist(tau, size_i, tau_bins, reff_ice_bins, ice)
+    tau_vs_reff_liq = hist(tau, size_w, tau_bins, reff_liq_bins, water)
 
     pct = 100.0 / ncol
     return ModisColumn(

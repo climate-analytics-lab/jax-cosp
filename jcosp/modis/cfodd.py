@@ -39,7 +39,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config, stats
+from jcosp import config, stats, surrogate
 from jcosp.constants import R_GROUND, R_UNDEF, TMELT
 
 
@@ -58,7 +58,8 @@ def _level_shape(x, ndim):
 
 
 def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
-                  iwp, icecot, icereff, frac_out, dbze) -> WarmRainDiagnostics:
+                  iwp, icecot, icereff, frac_out, dbze, weights=None,
+                  smoothing=surrogate.DEFAULT_SMOOTHING) -> WarmRainDiagnostics:
     """CFODD sample histograms and warm-rain occurrence counts.
 
     Parameters
@@ -81,6 +82,14 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
         re-quantized with the Fortran's 0.5/1.5 thresholds).
     dbze : (nlev, ncol, *batch)
         Attenuated radar reflectivity (dBZe) on the same grid.
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``).
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivatives across the -30 dBZe detection limit, the
+        regime thresholds, the freezing test at cloud top and the
+        histogram bin edges. No value depends on it. The cloud top and
+        bottom levels, the Reff class and the gridpoint screening are
+        discrete and have no derivative.
     """
     dtype = dbze.dtype
     nlev = dbze.shape[0]
@@ -120,6 +129,7 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     # i.e. surface upward): bottom = deepest detectable in-cloud echo,
     # top = shallowest one (gaps allowed at this stage).
     # ------------------------------------------------------------------
+    echo = surrogate.ge(dbze, config.CFODD_DBZE_MIN, smoothing.reflectivity)
     detectable = ((dbze != R_GROUND) & (dbze != R_UNDEF)
                   & (fracout_int != config.SGCLD_CLR)
                   & (dbze >= config.CFODD_DBZE_MIN))            # (nlev, ncol, *b)
@@ -130,15 +140,15 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     # SLWC checks: warm cloud top ...
     temp_b = jnp.broadcast_to(_level_shape(temperature, dbze.ndim), dbze.shape)
     t_top = jnp.take_along_axis(temp_b, kctop[None], axis=0)[0]
-    warm_top = t_top >= TMELT
+    warm_top = surrogate.ge(t_top, TMELT, smoothing.temperature)
     # ... and every level between bottom and top a stratiform cell with a
     # detectable echo (convective or clear cells, or dBZe < -30, disqualify).
     in_cloud = (lev >= kctop[None]) & (lev <= kcbtm[None])
-    slwc_ok = jnp.all(jnp.where(in_cloud,
-                                (fracout_int == config.SGCLD_ST)
-                                & (dbze >= config.CFODD_DBZE_MIN), True),
-                      axis=0)
-    col_ok = exists & warm_top & slwc_ok & point_ok[None]       # (ncol, *b)
+    # 0/1 per cell; its derivative is the echo's across the detection limit.
+    fails = jnp.where(in_cloud,
+                      1.0 - (fracout_int == config.SGCLD_ST) * echo, 0.0)
+    slwc_ok = 1.0 - surrogate.any_of(fails, axis=0)
+    col_ok = (exists * point_ok[None]).astype(dtype) * warm_top * slwc_ok
 
     # ------------------------------------------------------------------
     # Warm-rain regime from the column-maximum in-cloud dBZe.
@@ -146,10 +156,12 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     cmxdbz = jnp.maximum(
         jnp.max(jnp.where(in_cloud, dbze, config.CFODD_DBZE_MIN), axis=0),
         config.CFODD_DBZE_MIN)  # Fortran initializes cmxdbz at CFODD_DBZE_MIN
-    regime = jnp.where(cmxdbz < config.CFODD_BNDZE[0], 1,
-                       jnp.where(cmxdbz < config.CFODD_BNDZE[1], 2, 3))
-    wr = jnp.stack([jnp.sum(col_ok & (regime == r + 1), axis=0).astype(dtype)
-                    for r in range(config.WR_NREGIME)])         # (3, *b)
+    one = jnp.ones((), dtype) if weights is None else weights
+    below0 = surrogate.lt(cmxdbz, config.CFODD_BNDZE[0], smoothing.reflectivity)
+    below1 = surrogate.lt(cmxdbz, config.CFODD_BNDZE[1], smoothing.reflectivity)
+    regimes = (below0, (1.0 - below0) * below1, (1.0 - below0) * (1.0 - below1))
+    wr = jnp.stack([jnp.sum(one * col_ok * regime, axis=0).astype(dtype)
+                    for regime in regimes])                     # (3, *b)
 
     # ------------------------------------------------------------------
     # In-cloud optical depth profile: ICOD(z) = COT (1 - ((z-z_btm)/H)^(5/3))
@@ -163,13 +175,16 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     # Clamp inside the masked branch: the ratio is only used for levels
     # strictly above the bottom of a multi-level cloud (cgt > 0 there); the
     # clip keeps 0^(5/3)-type gradients and single-level clouds harmless.
+    # It is in [0, 1] wherever it is used; bounding it above as well keeps
+    # the levels outside the cloud finite (above a single-level cloud it is
+    # ~1e33 and its 5/3 power overflows float32), which a derivative
+    # through the unused cells needs.
     ratio = jnp.clip((z_b - z_btm[None]) / jnp.maximum(cgt[None], 1e-30),
-                     0.0, None)
+                     0.0, 1.0)
     liqcot_b = jnp.asarray(liqcot, dtype)[None, None]
     prof = liqcot_b * (1.0 - ratio ** (5.0 / 3.0))
     diagicod = jnp.where(lev == kcbtm[None], liqcot_b, prof)
-    icod = jnp.where(in_cloud & col_ok[None],
-                     jnp.minimum(diagicod, config.CFODD_ICOD_MAX), 0.0)
+    icod = jnp.minimum(diagicod, config.CFODD_ICOD_MAX)
 
     # ------------------------------------------------------------------
     # CFODD joint histogram (dBZe x ICOD) over all subcolumn/level cells,
@@ -181,13 +196,13 @@ def diag_warmrain(temperature, zlev, lwp, liqcot, liqreff,
     # subcolumns that FAILED the SLWC screening still land in the first ICOD
     # bin (their ICOD stays 0). Only in-cloud cells of SLWC-passing
     # subcolumns are CFODD samples; everything else is pushed out of range.
-    cell_ok = in_cloud & col_ok[None]
-    dbze_hist = jnp.where(cell_ok, dbze, -999.0)
-    dbze_flat = dbze_hist.reshape((-1,) + dbze.shape[2:])
-    icod_flat = icod.reshape((-1,) + icod.shape[2:])
-    hist = stats.hist2d(dbze_flat, icod_flat,
+    # The selection is the weight of each sample (see ``stats.hist2d``).
+    cell_ok = jnp.broadcast_to(in_cloud * (one * col_ok)[None], dbze.shape)
+    flat = lambda a: a.reshape((-1,) + dbze.shape[2:])
+    hist = stats.hist2d(flat(dbze), flat(icod),
                         jnp.asarray(config.CFODD_HIST_DBZE, dtype),
-                        jnp.asarray(config.CFODD_HIST_ICOD, dtype))
+                        jnp.asarray(config.CFODD_HIST_ICOD, dtype),
+                        weights=flat(cell_ok), width=smoothing.histogram)
     cls_sel = jnp.stack([(icls == c + 1) & point_ok
                          for c in range(config.CFODD_NCLASS)])  # (3, *b)
     cfodd = jnp.where(cls_sel[None, None], hist[:, :, None], 0.0)

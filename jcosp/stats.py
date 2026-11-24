@@ -11,10 +11,11 @@ stay TOA-first throughout, exactly as quickbeam_column does in the Fortran.
 
 import jax.numpy as jnp
 
+from jcosp import surrogate
 from jcosp.constants import R_GROUND, R_UNDEF
 
 
-def hist1d(var, bins):
+def hist1d(var, bins, weights=None, width: float = 0.0):
     """Per-bin counts over the subcolumn axis (cosp_stats.F90:hist1D).
 
     Parameters
@@ -23,21 +24,29 @@ def hist1d(var, bins):
         Samples (one histogram per batch element, counting over subcolumns).
     bins : (nbins+1,)
         Bin boundaries [lowest, tops...].
+    weights : broadcastable to ``var``, optional
+        Weight of each sample (the SCOPS subcolumn weight, value one; see
+        ``jcosp.subcol.scops.subcolumn_weights``). Counts are sums of
+        weights.
+    width : float
+        Smoothing of the bin edges in the derivative, as a fraction of the
+        narrower adjacent bin (``Smoothing.histogram``). The counts do not
+        depend on it; 0 leaves them with no derivative in ``var``.
 
     Returns
     -------
     (nbins, *batch) counts; R_UNDEF wherever any sample equals R_GROUND
     (below-surface levels poison the whole histogram, as in the Fortran).
     """
-    bins = jnp.asarray(bins)
-    lo = bins[:-1].reshape((-1,) + (1,) * var.ndim)
-    hi = bins[1:].reshape((-1,) + (1,) * var.ndim)
-    counts = jnp.sum((var[None] >= lo) & (var[None] < hi), axis=1).astype(var.dtype)
+    member = surrogate.bin_membership(var, bins, width)
+    if weights is not None:
+        member = member * weights
+    counts = jnp.sum(member, axis=1).astype(var.dtype)
     any_ground = jnp.any(var == R_GROUND, axis=0)
     return jnp.where(any_ground[None], R_UNDEF, counts)
 
 
-def hist2d(var1, var2, bins1, bins2):
+def hist2d(var1, var2, bins1, bins2, weights=None, width: float = 0.0):
     """Joint histogram counts over the sample axis (cosp_stats.F90:hist2D).
 
     Parameters
@@ -47,6 +56,12 @@ def hist2d(var1, var2, bins1, bins2):
         axis 0 — e.g. subcolumns, or flattened subcolumn x level cells).
     bins1 : (nbin1+1,), bins2 : (nbin2+1,)
         Ascending bin boundaries for each variable.
+    weights : broadcastable to ``var1``, optional
+        Weight of each sample: a 0/1 selection (differentiable or not), the
+        SCOPS subcolumn weight, or their product. Counts are sums of
+        weights, so a deselected sample needs no out-of-range fill value.
+    width : float
+        Smoothing of the bin edges in the derivative (see :func:`hist1d`).
 
     Returns
     -------
@@ -55,17 +70,15 @@ def hist2d(var1, var2, bins1, bins2):
     out-of-range samples (including R_UNDEF fills) are simply not counted.
     Unlike ``hist1d``, the Fortran hist2D applies no R_GROUND poisoning.
     """
-    bins1 = jnp.asarray(bins1)
-    bins2 = jnp.asarray(bins2)
-    shape = (-1, 1) + (1,) * (var1.ndim - 1)
-    m1 = ((var1[None] >= bins1[:-1].reshape(shape))
-          & (var1[None] < bins1[1:].reshape(shape)))     # (nbin1, n, *batch)
-    m2 = ((var2[None] >= bins2[:-1].reshape(shape))
-          & (var2[None] < bins2[1:].reshape(shape)))     # (nbin2, n, *batch)
+    dtype = var1.dtype
+    m1 = surrogate.bin_membership(var1, bins1, width)
+    m2 = surrogate.bin_membership(var2, bins2, width)
+    if weights is not None:
+        m1 = m1 * weights
     # Contract over the sample axis without materializing the
     # (nbin1, nbin2, n, *batch) intermediate.
-    return jnp.einsum("in...,jn...->ij...", m1.astype(var1.dtype),
-                      m2.astype(var1.dtype))
+    return jnp.einsum("in...,jn...->ij...", m1.astype(dtype),
+                      m2.astype(dtype))
 
 
 def change_vertical_grid(zfull, zhalf, y, newgrid_bot, newgrid_top,

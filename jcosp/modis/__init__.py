@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from jcosp import surrogate
 from jcosp.constants import R_UNDEF
 from jcosp.modis.cfodd import WarmRainDiagnostics, diag_warmrain
 from jcosp.modis.imager import (CLOUD_CCI, CLOUD_CCI_MIN_COS_ZENITH,
@@ -50,7 +51,8 @@ class ModisOutputs(NamedTuple):
 
 
 def simulate_modis(frac_out, mr_hydro, reff, dtau_s, dtau_c, pressure_half,
-                   sunlit=None, isccp_ctp=None) -> ModisOutputs:
+                   sunlit=None, isccp_ctp=None, weights=None,
+                   smoothing=surrogate.DEFAULT_SMOOTHING) -> ModisOutputs:
     """Run the MODIS path on subcolumn hydrometeor fields.
 
     Parameters
@@ -70,11 +72,18 @@ def simulate_modis(frac_out, mr_hydro, reff, dtau_s, dtau_c, pressure_half,
         statistics of dark points are R_UNDEF (tau-vs-Reff histograms 0).
     isccp_ctp : (ncol, *batch), optional
         ISCCP cloud-top pressure for low clouds (see ``modis_subcolumn``).
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``),
+        through which the column statistics respond to the cloud fraction.
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivatives across the detection limit, the phase
+        and pressure tests and the bin edges; no value depends on it.
     """
     opt = build_modis_optics(frac_out, mr_hydro, reff, dtau_s, dtau_c)
     sub = modis_subcolumn(pressure_half, opt.tau_067, opt.frac_liq,
                           opt.g, opt.w0, isccp_ctp=isccp_ctp)
-    col = modis_column(sub.phase, sub.cloud_top_pressure, sub.tau, sub.size)
+    col = modis_column(sub.phase, sub.cloud_top_pressure, sub.tau, sub.size,
+                       retrievals=sub, weights=weights, smoothing=smoothing)
 
     # cosp.F90 stores the tau/CTP joint histograms with the pressure bins
     # reordered surface-first.

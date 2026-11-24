@@ -25,7 +25,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config
+from jcosp import config, surrogate
 
 
 class WarmRainFlags(NamedTuple):
@@ -53,25 +53,38 @@ def _cloud_layer_ids(cloudy):
     return jnp.where(cloudy, jnp.cumsum(starts, axis=0), 0)
 
 
-def _classify_at_threshold(dbze, cloudy, has_ice, layer_id, threshold):
+def _classify_at_threshold(dbze, cloudy, has_ice, layer_id, threshold, width):
     """Threshold exceedance + warm/cold split of each subcolumn.
 
-    Returns (exceeds, cold): ``exceeds`` is True where any cloudy level's
-    reflectivity passes ``threshold``; ``cold`` is True where the *highest*
+    Returns (exceeds, cold) as 0/1 floats: ``exceeds`` where any cloudy
+    level's reflectivity passes ``threshold``; ``cold`` where the *highest*
     such cloud layer contains ice anywhere in its contiguous extent.
+
+    ``exceeds`` is differentiable in the reflectivity (``width``). ``cold``
+    is a property of the cloud layer and has no derivative; for a subcolumn
+    that does not reach the threshold it is evaluated at its strongest
+    cloudy echo, the level that would cross first, so that the derivative
+    of a near-miss is booked to the regime it would join. The value is
+    unaffected: a subcolumn that does not exceed is in neither regime.
     """
+    dtype = dbze.dtype
     hit = cloudy & (dbze > threshold)
-    exceeds = jnp.any(hit, axis=0)
+    hit_gate = cloudy.astype(dtype) * surrogate.gt(dbze, threshold, width)
+    exceeds = surrogate.any_of(hit_gate, axis=0)
     # First hit from the top (TOA-first); argmax returns the first True.
     k_top = jnp.argmax(hit, axis=0)
+    k_near = jnp.argmax(jnp.where(cloudy, dbze, -jnp.inf), axis=0)
+    k_top = jnp.where(jnp.any(hit, axis=0), k_top, k_near)
     top_layer = jnp.take_along_axis(layer_id, k_top[None], axis=0)[0]
     layer_ice = jnp.any(has_ice & (layer_id == top_layer[None]), axis=0)
-    return exceeds, exceeds & layer_ice
+    return exceeds, layer_ice.astype(dtype)
 
 
 def warm_rain_classification(dbze, cloud_liq, cloud_ice, surf_liquid_precip,
                              condensate_threshold: float = 0.0,
-                             ice_threshold: float = 0.0) -> WarmRainFlags:
+                             ice_threshold: float = 0.0, weights=None,
+                             smoothing=surrogate.DEFAULT_SMOOTHING,
+                             ) -> WarmRainFlags:
     """Classify subcolumns into warm/cold rain and drizzle occurrence.
 
     Parameters
@@ -87,29 +100,41 @@ def warm_rain_classification(dbze, cloud_liq, cloud_ice, surf_liquid_precip,
         Whether the subcolumn produces liquid precipitation at the surface.
     condensate_threshold, ice_threshold : float
         "Nonzero" cutoffs for cloud condensate and layer ice (kg/kg).
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``).
+    smoothing : jcosp.surrogate.Smoothing
+        ``reflectivity`` is the width of the derivative across the -15 and
+        0 dBZe thresholds; no value depends on it.
 
     Returns
     -------
     WarmRainFlags of (*batch) occurrence fractions over subcolumns.
     """
+    dtype = dbze.dtype
     cloudy = (cloud_liq + cloud_ice) > condensate_threshold
     layer_id = _cloud_layer_ids(cloudy)
     has_ice = cloudy & (cloud_ice > ice_threshold)
 
     driz_thr, rain_thr = float(config.CFODD_BNDZE[0]), float(config.CFODD_BNDZE[1])
-    driz, driz_cold = _classify_at_threshold(dbze, cloudy, has_ice, layer_id, driz_thr)
-    rain, rain_cold = _classify_at_threshold(dbze, cloudy, has_ice, layer_id, rain_thr)
+    width = smoothing.reflectivity
+    driz, driz_cold = _classify_at_threshold(dbze, cloudy, has_ice, layer_id,
+                                             driz_thr, width)
+    rain, rain_cold = _classify_at_threshold(dbze, cloudy, has_ice, layer_id,
+                                             rain_thr, width)
 
-    driz = driz & surf_liquid_precip
-    rain = rain & surf_liquid_precip
-    driz_only = driz & ~rain  # drizzle regime: -15 < max Ze <= 0
+    wet = jnp.asarray(surf_liquid_precip).astype(dtype)
+    driz = driz * wet
+    rain = rain * wet
+    driz_only = driz * (1.0 - rain)  # drizzle regime: -15 < max Ze <= 0
 
-    ncol_mean = lambda f: jnp.mean(f, axis=0)
+    def ncol_mean(f):
+        return surrogate.occurrence(f, weights, axis=0)
+
     return WarmRainFlags(
-        warm_rain=ncol_mean(rain & ~rain_cold),
-        cold_rain=ncol_mean(rain & rain_cold),
-        warm_drizzle=ncol_mean(driz_only & ~driz_cold),
-        cold_drizzle=ncol_mean(driz_only & driz_cold),
+        warm_rain=ncol_mean(rain * (1.0 - rain_cold)),
+        cold_rain=ncol_mean(rain * rain_cold),
+        warm_drizzle=ncol_mean(driz_only * (1.0 - driz_cold)),
+        cold_drizzle=ncol_mean(driz_only * driz_cold),
     )
 
 

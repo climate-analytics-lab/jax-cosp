@@ -13,7 +13,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config, stats
+from jcosp import config, stats, surrogate
 from jcosp.constants import R_UNDEF
 
 
@@ -101,13 +101,23 @@ class CloudsatColumnOutputs(NamedTuple):
 
 
 def cloudsat_precip_occurrence(ze, ze_non, land, surfelev, t2m,
-                               frac_precip_ice, zstep=config.VGRID_ZSTEP):
+                               frac_precip_ice, zstep=config.VGRID_ZSTEP,
+                               weights=None,
+                               smoothing=surrogate.DEFAULT_SMOOTHING):
     """CloudSat 2C-PRECIP-COLUMN-style near-surface precipitation flags.
 
     Port of quickbeam.F90:cloudsat_precipOccurence. Operates on the CloudSat
     statistical grid (TOA-first); ``ze``/``ze_non`` are (nglev, ncol, *batch),
     ``frac_precip_ice`` is the frozen fraction of surface precipitation
     (ncol, *batch), and ``land``/``surfelev``/``t2m`` are (*batch).
+
+    The Fortran assigns each subcolumn one class by a sequence of tests,
+    each overriding the last. Here the same sequence updates a 0/1
+    membership of every class, which gives the identical classification and
+    lets the cover of each class respond, in the derivative, to the
+    reflectivities, the attenuation, the frozen fraction and the 2-m
+    temperature a subcolumn is tested on (``smoothing``) and to the cloud
+    fraction through ``weights``, the SCOPS subcolumn weight.
 
     Returns
     -------
@@ -117,6 +127,7 @@ def cloudsat_precip_occurrence(ze, ze_non, land, surfelev, t2m,
         Mean path-integrated attenuation over subcolumns (dB).
     """
     nglev = ze.shape[0]
+    dtype = ze.dtype
     # Range gate used for the flags: 480-960 m above the surface (fortran
     # cloudsat_preclvl, shifted by the surface elevation), one gate higher
     # over land. Gather per batch element.
@@ -137,60 +148,79 @@ def cloudsat_precip_occurrence(ze, ze_non, land, surfelev, t2m,
     znb = config.ZE_NON_BINVAL
     zlb = config.Z_BINVAL_LND
     fpi = frac_precip_ice
-    flags = jnp.full(ze_lvl.shape, config.PCLASS_DEFAULT, dtype=jnp.int32)
+    w_z = smoothing.reflectivity
+    w_f = smoothing.phase_fraction
+    w_t = smoothing.temperature
+    above = lambda x, thr: surrogate.gt(x, thr, w_z)
+    upto = lambda x, thr: surrogate.le(x, thr, w_z)
+    either = lambda a, b: 1.0 - (1.0 - a) * (1.0 - b)
+
+    def assign(member, test, pclass):
+        """Set the class of the subcolumns passing ``test`` to ``pclass``."""
+        onehot = (jnp.arange(config.N_CLOUDSAT_PRECIP_CLASS) == pclass).astype(
+            dtype).reshape((-1,) + (1,) * ze_lvl.ndim)
+        return member + test[None] * (onehot - member)
+
+    start = (jnp.arange(config.N_CLOUDSAT_PRECIP_CLASS)
+             == config.PCLASS_DEFAULT).astype(dtype)
+    start = jnp.broadcast_to(
+        start.reshape((-1,) + (1,) * ze_lvl.ndim),
+        (config.N_CLOUDSAT_PRECIP_CLASS,) + ze_lvl.shape)
 
     # ---- Ocean points (thresholds on the unattenuated gate value). --------
-    o = jnp.full_like(flags, config.PCLASS_DEFAULT)
-    snow = fpi > 0.9
-    o = jnp.where(snow & (ze_non_lvl > znb[1]), config.PCLASS_SNOW2, o)
-    o = jnp.where(snow & (ze_non_lvl > znb[3]) & (ze_non_lvl <= znb[1]),
-                  config.PCLASS_SNOW1, o)
-    mixed = (fpi > 0.1) & (fpi <= 0.9)
-    o = jnp.where(mixed & (ze_non_lvl > znb[1]), config.PCLASS_MIXED2, o)
-    o = jnp.where(mixed & (ze_non_lvl > znb[3]) & (ze_non_lvl <= znb[1]),
-                  config.PCLASS_MIXED1, o)
-    rain = fpi <= 0.1
-    o = jnp.where(rain & (ze_non_lvl > znb[0]), config.PCLASS_RAIN3, o)
-    o = jnp.where(rain & (ze_non_lvl > znb[2]) & (ze_non_lvl <= znb[0]),
-                  config.PCLASS_RAIN2, o)
-    o = jnp.where(rain & (ze_non_lvl > znb[3]) & (ze_non_lvl <= znb[2]),
-                  config.PCLASS_RAIN1, o)
-    o = jnp.where(rain & (pia_col > 40), config.PCLASS_RAIN4, o)
-    o = jnp.where(ze_non_lvl <= -15, config.PCLASS_NO_PRECIP, o)
+    o = start
+    snow = surrogate.gt(fpi, 0.9, w_f)
+    o = assign(o, snow * above(ze_non_lvl, znb[1]), config.PCLASS_SNOW2)
+    o = assign(o, snow * above(ze_non_lvl, znb[3]) * upto(ze_non_lvl, znb[1]),
+               config.PCLASS_SNOW1)
+    mixed = surrogate.gt(fpi, 0.1, w_f) * surrogate.le(fpi, 0.9, w_f)
+    o = assign(o, mixed * above(ze_non_lvl, znb[1]), config.PCLASS_MIXED2)
+    o = assign(o, mixed * above(ze_non_lvl, znb[3]) * upto(ze_non_lvl, znb[1]),
+               config.PCLASS_MIXED1)
+    rain = surrogate.le(fpi, 0.1, w_f)
+    o = assign(o, rain * above(ze_non_lvl, znb[0]), config.PCLASS_RAIN3)
+    o = assign(o, rain * above(ze_non_lvl, znb[2]) * upto(ze_non_lvl, znb[0]),
+               config.PCLASS_RAIN2)
+    o = assign(o, rain * above(ze_non_lvl, znb[3]) * upto(ze_non_lvl, znb[2]),
+               config.PCLASS_RAIN1)
+    o = assign(o, rain * above(pia_col, 40), config.PCLASS_RAIN4)
+    o = assign(o, upto(ze_non_lvl, -15), config.PCLASS_NO_PRECIP)
 
     # ---- Land points (attenuated gate value + column max + 2-m T). --------
-    ll = jnp.full_like(flags, config.PCLASS_DEFAULT)
-    cold = t2m < 273.0
-    ll = jnp.where(cold & (ze_lvl > zlb[4]), config.PCLASS_SNOW2, ll)
-    ll = jnp.where(cold & (ze_lvl > zlb[5]) & (ze_lvl <= zlb[4]),
-                   config.PCLASS_SNOW1, ll)
-    mixed_t = (t2m >= 273.0) & (t2m <= 275.0)
-    ll = jnp.where(mixed_t & (((zmax > zlb[0]) & (pia_col > 30))
-                              | (ze_lvl > zlb[3])), config.PCLASS_MIXED2, ll)
-    ll = jnp.where(mixed_t & (ze_lvl > zlb[5]) & (ze_lvl <= zlb[3])
-                   & (zmax > zlb[4]), config.PCLASS_MIXED1, ll)
-    warm = t2m > 275.0
-    ll = jnp.where(warm & (((zmax > zlb[0]) & (pia_col > 30))
-                           | (ze_lvl > zlb[1])), config.PCLASS_RAIN3, ll)
-    ll = jnp.where(warm & (ze_lvl > zlb[5]) & (zmax > zlb[2]),
-                   config.PCLASS_RAIN2, ll)
-    ll = jnp.where(warm & (ze_lvl > zlb[5]) & (zmax < zlb[2]),
-                   config.PCLASS_RAIN1, ll)
-    ll = jnp.where(warm & (pia_col > 40), config.PCLASS_RAIN4, ll)
-    ll = jnp.where(ze_lvl <= -15, config.PCLASS_NO_PRECIP, ll)
+    ll = start
+    t2m_b = jnp.broadcast_to(jnp.asarray(t2m, dtype), ze_lvl.shape)
+    cold = surrogate.lt(t2m_b, 273.0, w_t)
+    ll = assign(ll, cold * above(ze_lvl, zlb[4]), config.PCLASS_SNOW2)
+    ll = assign(ll, cold * above(ze_lvl, zlb[5]) * upto(ze_lvl, zlb[4]),
+                config.PCLASS_SNOW1)
+    mixed_t = surrogate.ge(t2m_b, 273.0, w_t) * surrogate.le(t2m_b, 275.0, w_t)
+    ll = assign(ll, mixed_t * either(above(zmax, zlb[0]) * above(pia_col, 30),
+                                     above(ze_lvl, zlb[3])),
+                config.PCLASS_MIXED2)
+    ll = assign(ll, mixed_t * above(ze_lvl, zlb[5]) * upto(ze_lvl, zlb[3])
+                * above(zmax, zlb[4]), config.PCLASS_MIXED1)
+    warm = surrogate.gt(t2m_b, 275.0, w_t)
+    ll = assign(ll, warm * either(above(zmax, zlb[0]) * above(pia_col, 30),
+                                  above(ze_lvl, zlb[1])),
+                config.PCLASS_RAIN3)
+    ll = assign(ll, warm * above(ze_lvl, zlb[5]) * above(zmax, zlb[2]),
+                config.PCLASS_RAIN2)
+    ll = assign(ll, warm * above(ze_lvl, zlb[5])
+                * surrogate.lt(zmax, zlb[2], w_z), config.PCLASS_RAIN1)
+    ll = assign(ll, warm * above(pia_col, 40), config.PCLASS_RAIN4)
+    ll = assign(ll, upto(ze_lvl, -15), config.PCLASS_NO_PRECIP)
 
-    flags = jnp.where(land >= 0.5, ll, o)
+    member = jnp.where(land >= 0.5, ll, o)      # (nclass, ncol, *batch)
 
     # Aggregate over subcolumns.
-    classes = jnp.arange(config.N_CLOUDSAT_PRECIP_CLASS).reshape(
-        (-1,) + (1,) * flags.ndim)
-    precip_cover = jnp.mean(flags[None] == classes, axis=1)
-    pia = jnp.mean(pia_col, axis=0)
+    precip_cover = surrogate.occurrence(member, weights, axis=1)
+    pia = jnp.mean(pia_col if weights is None else weights * pia_col, axis=0)
     return precip_cover, pia
 
 
 def quickbeam_column(dbze, ze_non, zfull, zhalf, land, surfelev, t2m,
-                     frac_precip_ice):
+                     frac_precip_ice, weights=None,
+                     smoothing=surrogate.DEFAULT_SMOOTHING):
     """CloudSat gridded diagnostics: CFAD + near-surface precipitation flags.
 
     Port of quickbeam.F90:quickbeam_column with ``use_vgrid=True`` (the
@@ -204,6 +234,11 @@ def quickbeam_column(dbze, ze_non, zfull, zhalf, land, surfelev, t2m,
         2-m temperature (K).
     frac_precip_ice : (ncol, *batch) frozen fraction of near-surface precip
         (regridded to the flag gate by the caller, as in the driver).
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``).
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivative across the bin edges and class thresholds;
+        no value depends on it.
     """
     dbze_i = stats.change_vertical_grid(
         zfull, zhalf, dbze, config.VGRID_ZL, config.VGRID_ZU, log_units=True)
@@ -212,11 +247,15 @@ def quickbeam_column(dbze, ze_non, zfull, zhalf, land, surfelev, t2m,
 
     # CFAD: per new-grid level, histogram over subcolumns, / ncolumns.
     ncol = dbze.shape[1]
-    cfad = stats.hist1d(jnp.moveaxis(dbze_i, 0, 1), config.CLOUDSAT_HIST_REF)
+    cfad = stats.hist1d(
+        jnp.moveaxis(dbze_i, 0, 1), config.CLOUDSAT_HIST_REF,
+        weights=None if weights is None else weights[:, None],
+        width=smoothing.histogram)
     cfad = jnp.where(cfad != R_UNDEF, cfad / ncol, cfad)
 
     precip_cover, pia = cloudsat_precip_occurrence(
-        dbze_i, ze_non_i, land, surfelev, t2m, frac_precip_ice)
+        dbze_i, ze_non_i, land, surfelev, t2m, frac_precip_ice,
+        weights=weights, smoothing=smoothing)
     return CloudsatColumnOutputs(
         cfad_ze=cfad, dbze_vgrid=dbze_i, ze_non_vgrid=ze_non_i,
         precip_cover=precip_cover, pia=pia)

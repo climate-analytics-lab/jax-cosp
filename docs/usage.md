@@ -170,18 +170,41 @@ convective precip profile is a labelled stopgap).
 
 ## Differentiability
 
-Everything downstream of the subcolumn sampling is jit- and grad-compatible;
-reflectivity is differentiable w.r.t. water contents, fluxes and (piecewise)
-effective radii. The subcolumn sampling itself is stochastic forward
-(translation-plan option A): treat SCOPS draws as fixed (pass `frac_out`)
-when differentiating, or use ensemble/gradient-free calibration across keys.
-The hard dBZe thresholds in the CloudSat/warm-rain classifications are step
-functions; a smooth-threshold variant is a planned research spike (plan
-§5.1-5.2). The MODIS retrievals are differentiable w.r.t. the optical
-inputs (tau, CTP, reflectances; particle size piecewise, through the
-trial-radius bracketing), while the cloud/phase masks and the CFODD /
-occurrence *counts* are step functions — treat those as forward
-diagnostics.
+Every routine is jit-, vmap- and grad-compatible, and every column-stage
+diagnostic has a gradient with respect to the model state it is simulated
+from, including the cloud fraction.
+
+That is not automatic. Cloud fractions, histograms and occurrence
+frequencies are counts of subcolumns passing hard tests, and a count has a
+derivative of exactly zero. The values here stay those counts, bit for bit;
+their derivatives are taken from smooth surrogates (a logistic step for each
+threshold and bin edge, a likelihood-ratio weight per subcolumn for the
+SCOPS sampling). So a loss on a simulated observable can be minimised with a
+gradient method:
+
+```python
+def loss(params):
+    state, dtau_s = host_model(params)
+    out = simulate_cloudsat_modis(state, lut, dtau_s, dtau_c, p_half, key=key)
+    return jnp.mean((out.modis.column.cf_total - observed_cf) ** 2)
+
+grad = jax.grad(loss)(params)
+```
+
+The gradient is an estimate of the derivative of the *expected* observable,
+not the derivative of the sampled value, which is a staircase; a
+finite-difference check of the output disagrees with it by design. The step
+widths are a `jcosp.surrogate.Smoothing` passed as `smoothing=`;
+`jcosp.surrogate.NO_SMOOTHING` restores the reference derivatives. A
+simulator run outside the joint driver on the same SCOPS draw, or a
+statistic formed by hand from per-subcolumn output, needs the subcolumn
+weight (`simulate_cloudsat(...).subcolumn_weight`) passed or multiplied in.
+[gradients.md](gradients.md) has the construction, the widths, the measured
+accuracy and what has no derivative.
+
+Reflectivity is piecewise constant in effective radius and temperature
+through the radar lookup table's quantization, as in the Fortran, and the
+MODIS particle size is piecewise smooth through its trial-radius bracket.
 
 ## Regenerating the radar LUT
 
