@@ -254,8 +254,9 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   particle size are differentiable w.r.t. the optical inputs; the size
   retrieval's trial-point selection (argmin + bracket choice) makes size a
   piecewise-smooth function with jumps only where the selected bracket
-  changes. Cloud detection and phase are hard thresholds (step functions),
-  as in the CloudSat flags. Tested via `jax.grad` finiteness.
+  changes. Cloud detection and phase are hard thresholds in the value;
+  in the column stage their derivatives, and those of the pressure limits
+  and bin edges, are those of smooth surrogates (docs/gradients.md).
 
 - `ModisRetrievals` carries three fields COSP's `modis_subcolumn` does not
   return: `liquid_fraction` (the extinction-weighted liquid share over the
@@ -264,8 +265,12 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   phase's trial table, of which `size` is the one the phase selects). They
   are unmasked (no R_UNDEF in undetected subcolumns; a failed size
   retrieval is negative) and exist so that a different phase rule can reuse
-  the reflectance inversion (`jcosp/modis/imager.py`). The four COSP fields
-  are unchanged.
+  the reflectance inversion (`jcosp/modis/imager.py`). Two more,
+  `tau_all` and `ctp_all`, are the column optical thickness and cloud-top
+  pressure of every subcolumn, detected or not: the column stage takes the
+  derivative of the detection limit and the bin edges through them, which
+  the R_UNDEF-filled fields cannot carry. The four COSP fields are
+  unchanged.
 
 ## Imager water paths (`jcosp/modis/imager.py`): not in COSP
 
@@ -298,10 +303,11 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   (`CLOUD_CCI_MIN_COS_ZENITH`); the host multiplies by that mask and
   averages it alongside. The product's overpass-time sampling is not
   modelled either.
-- **Differentiability.** Detection and phase are hard steps. Masked-out
-  subcolumns are zeroed before the product is formed, because their `tau`
-  is R_UNDEF and a masked product of two such values overflows in reverse
-  mode. Tested via `jax.grad` finiteness.
+- **Differentiability.** Detection and phase are hard steps in the value
+  and smooth surrogates in the derivative (docs/gradients.md). The paths
+  are formed from the unfilled optical thickness (`tau_all`), never from
+  the R_UNDEF fill, whose product with a size overflows in reverse mode.
+  Tested via `jax.grad` finiteness.
 
 ## CFODD / warm-rain occurrence (`jcosp/modis/cfodd.py`)
 
@@ -328,8 +334,11 @@ ported routines against loop-for-loop transliterations of the Fortran, and
 - `ratio**(5/3)` in the ICOD profile is clip-guarded at 0 and the cloud
   geometric thickness clamped away from zero inside the masked branch
   (single-level clouds use the bottom-level branch, as in the Fortran).
-- Counting diagnostics (histograms, occurrence counts) carry no useful
-  gradients; treat CFODD outputs as forward diagnostics.
+- The counts (the CFODD histogram and the regime occurrences) take their
+  derivatives from smooth surrogates of the -30 dBZe limit, the regime
+  thresholds, the warm-top test and the bin edges, and from the subcolumn
+  weight (docs/gradients.md). The cloud top and bottom levels, the Reff
+  class and the gridpoint screening are discrete, with no derivative.
 - Driven by `jcosp.simulator.simulate_cloudsat_modis` exactly as cosp.F90's
   default `use_vgrid=.true.` path: temperature and the SCOPS map regridded
   linearly and dBZe log-averaged onto the 40 x 480 m grid, with
@@ -394,8 +403,9 @@ ported routines against loop-for-loop transliterations of the Fortran, and
   cloudy-mean divisions clamp `totalcldarea` away from zero inside the
   `totalcldarea > 0` branch. Radiances, Tb, the IR adjustment, the log-p
   CTP interpolation and the albedo/mean-tau fits are differentiable; the
-  level-match selection, the `tauchk`/`taumin` overrides and all counts
-  are step functions.
+  level-match selection and the `tauchk` overrides are step functions. The
+  cloud-area limit at `taumin` and the histogram counts take their
+  derivatives from smooth surrogates (docs/gradients.md).
 - **Composition** (`jcosp.simulator.simulate_cloudsat_modis(run_isccp=True)`):
   ISCCP runs on the same SCOPS realization as the radar and MODIS, and its
   `boxptop` feeds the MODIS low-cloud (CTP > 700 hPa) substitution exactly

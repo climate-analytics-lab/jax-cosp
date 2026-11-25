@@ -18,11 +18,11 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import classify, config, inputs, isccp, modis
+from jcosp import classify, config, inputs, isccp, modis, surrogate
 from jcosp.radar import optics, quickbeam
 from jcosp.radar.gases import gases
 from jcosp.stats import change_vertical_grid
-from jcosp.subcol import prec_scops, scops
+from jcosp.subcol import prec_scops, scops_with_weights
 
 
 class CloudsatInputs(NamedTuple):
@@ -66,23 +66,41 @@ class CloudsatOutputs(NamedTuple):
     warm_rain: classify.WarmRainFlags  # (*batch) occurrence fractions
     frac_out: jnp.ndarray           # (nlev, ncol, *batch) subcolumn cloud map
     prec_frac: jnp.ndarray          # (nlev, ncol, *batch) subcolumn precip map
+    # (ncol, *batch) weight of each subcolumn: exactly one, carrying the
+    # derivative of the SCOPS sampling with respect to the cloud fractions
+    # (jcosp.subcol.scops.subcolumn_weights). Multiply by it in any
+    # statistic formed over subcolumns from the fields above. None when the
+    # caller supplied frac_out without weights.
+    subcolumn_weight: jnp.ndarray | None = None
 
 
 def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
                       key=None, ncolumns: int = 100, overlap: int = 3,
                       frac_out=None,
                       radar: config.RadarConfig = config.CLOUDSAT_RADAR,
+                      weights=None,
+                      smoothing: surrogate.Smoothing = surrogate.DEFAULT_SMOOTHING,
                       ) -> CloudsatOutputs:
     """Run the CloudSat radar path on gridbox-mean model state.
 
     Either ``key`` (to sample subcolumns with SCOPS) or a precomputed
     ``frac_out`` subcolumn cloud map must be given.
+
+    ``smoothing`` shapes the derivatives of the statistics across COSP's
+    hard decisions and changes no value (``jcosp.surrogate``,
+    docs/gradients.md); ``jcosp.surrogate.NO_SMOOTHING`` gives the
+    reference derivatives. With ``key`` the SCOPS sampling contributes its
+    own derivative with respect to the cloud fractions through the
+    subcolumn weight; a caller supplying ``frac_out`` may pass the matching
+    ``weights`` (see ``jcosp.subcol.scops.subcolumn_weights``), and
+    otherwise the statistics have no derivative through the sampling.
     """
     if frac_out is None:
         if key is None:
             raise ValueError("provide either key or frac_out")
-        frac_out = scops(key, state.cloud_frac, state.conv_frac,
-                         ncolumns, overlap)
+        frac_out, weights = scops_with_weights(
+            key, state.cloud_frac, state.conv_frac, ncolumns, overlap,
+            floor=smoothing.cloud_fraction)
 
     ls_p_rate = state.fl_lsrain + state.fl_lssnow + state.fl_lsgrpl
     cv_p_rate = state.fl_ccrain + state.fl_ccsnow
@@ -92,7 +110,8 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
         frac_out, prec_frac, state.pressure, state.temperature,
         state.mr_lsliq, state.mr_lsice, state.mr_ccliq, state.mr_ccice,
         state.fl_lsrain, state.fl_lssnow, state.fl_lsgrpl,
-        state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff)
+        state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff,
+        weights=weights)
 
     # Gaseous attenuation is per profile (identical across subcolumns).
     g_vol = gases(state.pressure, state.temperature,
@@ -122,7 +141,7 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
 
     column = quickbeam.quickbeam_column(
         dbze, ze_non, state.zfull, state.zhalf, state.land, state.surfelev,
-        state.t2m, fpi_gate)
+        state.t2m, fpi_gate, weights=weights, smoothing=smoothing)
 
     # Warm-rain classification (Mülmenstädt et al. 2020): liquid surface
     # precipitation = rain water reaching the lowest model level.
@@ -133,12 +152,14 @@ def simulate_cloudsat(state: CloudsatInputs, lut: optics.ZScaleLUT,
     cloud_ice = (hyd.mr_hydro[..., config.I_LSCICE]
                  + hyd.mr_hydro[..., config.I_CVCICE])
     warm_rain = classify.warm_rain_classification(
-        dbze, cloud_liq, cloud_ice, rain_sfc > 0.0)
+        dbze, cloud_liq, cloud_ice, rain_sfc > 0.0, weights=weights,
+        smoothing=smoothing)
 
     return CloudsatOutputs(
         dbze=dbze, ze_non=ze_non, cfad_ze=column.cfad_ze,
         precip_cover=column.precip_cover, pia=column.pia,
-        warm_rain=warm_rain, frac_out=frac_out, prec_frac=prec_frac)
+        warm_rain=warm_rain, frac_out=frac_out, prec_frac=prec_frac,
+        subcolumn_weight=weights)
 
 
 class CloudsatModisOutputs(NamedTuple):
@@ -161,6 +182,8 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
                             skt=None, emsfc_lw=None,
                             isccp_top_height: int = 1,
                             isccp_top_height_direction: int = 2,
+                            weights=None,
+                            smoothing: surrogate.Smoothing = surrogate.DEFAULT_SMOOTHING,
                             ) -> CloudsatModisOutputs:
     """Run CloudSat + MODIS (+ optional ISCCP) on one SCOPS realization.
 
@@ -182,10 +205,14 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
     ``isccp_ctp`` is given, which takes precedence).
 
     ``sunlit``/``isccp_ctp`` are passed through to the MODIS column stage
-    (see ``jcosp.modis.simulate_modis``).
+    (see ``jcosp.modis.simulate_modis``). ``weights`` and ``smoothing`` are
+    those of :func:`simulate_cloudsat`; every simulator here shares the one
+    SCOPS draw and its subcolumn weight.
     """
     cs = simulate_cloudsat(state, lut, key=key, ncolumns=ncolumns,
-                           overlap=overlap, frac_out=frac_out, radar=radar)
+                           overlap=overlap, frac_out=frac_out, radar=radar,
+                           weights=weights, smoothing=smoothing)
+    weights = cs.subcolumn_weight
 
     isc = None
     if run_isccp:
@@ -204,7 +231,8 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
             skt, emsfc_lw, state.temperature, state.pressure, pressure_half,
             state.specific_humidity, sunlit=sunlit,
             top_height=isccp_top_height,
-            top_height_direction=isccp_top_height_direction)
+            top_height_direction=isccp_top_height_direction,
+            weights=weights, smoothing=smoothing)
         if isccp_ctp is None:
             isccp_ctp = isc.subcolumn.boxptop
 
@@ -215,11 +243,13 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
         cs.frac_out, cs.prec_frac, state.pressure, state.temperature,
         state.mr_lsliq, state.mr_lsice, state.mr_ccliq, state.mr_ccice,
         state.fl_lsrain, state.fl_lssnow, state.fl_lsgrpl,
-        state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff)
+        state.fl_ccrain, state.fl_ccsnow, reff_in=state.reff,
+        weights=weights)
 
     mod = modis.simulate_modis(cs.frac_out, hyd.mr_hydro, hyd.reff,
                                dtau_s, dtau_c, pressure_half,
-                               sunlit=sunlit, isccp_ctp=isccp_ctp)
+                               sunlit=sunlit, isccp_ctp=isccp_ctp,
+                               weights=weights, smoothing=smoothing)
 
     # CFODD / warm-rain inputs on the CloudSat statistical grid (cosp.F90,
     # Lcloudsat_modis_wr with use_vgrid=.true.).
@@ -239,7 +269,7 @@ def simulate_cloudsat_modis(state: CloudsatInputs, lut: optics.ZScaleLUT,
         temp_r, jnp.asarray(config.VGRID_ZU, state.temperature.dtype),
         lwp=col.lwp, liqcot=col.tau_liquid, liqreff=col.size_liquid,
         iwp=col.iwp, icecot=col.tau_ice, icereff=col.size_ice,
-        frac_out=frac_r, dbze=dbze_r)
+        frac_out=frac_r, dbze=dbze_r, weights=weights, smoothing=smoothing)
 
     return CloudsatModisOutputs(cloudsat=cs, modis=mod, warmrain=wr,
                                 isccp=isc)

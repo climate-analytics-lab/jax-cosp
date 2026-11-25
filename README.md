@@ -109,10 +109,17 @@ the ported results unchanged.
   quantization the Fortran applies, with none of the iterative Mie loops in the
   computation graph.
 - **Stochastic subcolumns (option A of the translation plan).** SCOPS is ported
-  faithfully with `jax.random`; the warm-rain fraction is a forward diagnostic.
-  Hosts using a McICA generator (e.g. JAX-GCM's) can instead inject their own
-  cloud masks so radiation and the satellite simulator see the same subgrid
-  cloud field. A relaxed/differentiable sampler is a planned research spike.
+  faithfully with `jax.random`. Hosts using a McICA generator (e.g. JAX-GCM's)
+  can instead inject their own cloud masks so radiation and the satellite
+  simulator see the same subgrid cloud field.
+- **Reference values, usable gradients.** COSP's diagnostics are counts of
+  subcolumns passing hard tests, whose derivatives are exactly zero. Every
+  output here keeps the reference value bit for bit and takes its derivative
+  from a smooth surrogate instead: a logistic step for each threshold and bin
+  edge, and a likelihood-ratio weight per subcolumn for the SCOPS sampling.
+  Cloud fractions, histograms and occurrence frequencies can therefore be
+  calibration targets of a gradient-based optimiser. See
+  [docs/gradients.md](docs/gradients.md).
 - **Host hooks live in the host.** This package is model-agnostic; the JAX-GCM
   `PhysicsTerm` wrapper lives in the JAX-GCM repository.
 

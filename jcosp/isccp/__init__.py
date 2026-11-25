@@ -15,6 +15,7 @@ Array convention: level axis 0 TOA-first, subcolumn axis 1, batch trailing.
 
 from typing import NamedTuple
 
+from jcosp import surrogate
 from jcosp.isccp.simulator import (IsccpColumn, IsccpSubcolumn, isccp_column,
                                    isccp_subcolumn, water_vapour_emissivity)
 
@@ -38,7 +39,8 @@ class IsccpOutputs(NamedTuple):
 def simulate_isccp(frac_out, tau_067, emiss_11, skt, emsfc_lw, temperature,
                    pressure_full, pressure_half, qv, sunlit=None,
                    top_height: int = 1,
-                   top_height_direction: int = 2) -> IsccpOutputs:
+                   top_height_direction: int = 2, weights=None,
+                   smoothing=surrogate.DEFAULT_SMOOTHING) -> IsccpOutputs:
     """Run the ISCCP (ICARUS) path on subcolumn optical fields.
 
     Parameters
@@ -68,6 +70,12 @@ def simulate_isccp(frac_out, tau_067, emiss_11, skt, emsfc_lw, temperature,
         Cloud-top method and match direction (COSP ``isccp_init``); the
         defaults (1, 2) are the ISCCP-recommended configuration. See
         :func:`jcosp.isccp.simulator.isccp_subcolumn`.
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight (``jcosp.subcol.scops.subcolumn_weights``),
+        through which the column statistics respond to the cloud fraction.
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivatives across the cloud-area limit and the bin
+        edges; no value depends on it.
     """
     sub = isccp_subcolumn(tau_067, emiss_11, frac_out, skt, emsfc_lw, qv,
                           temperature, pressure_full, pressure_half,
@@ -76,7 +84,8 @@ def simulate_isccp(frac_out, tau_067, emiss_11, skt, emsfc_lw, temperature,
     # The Fortran drivers hand ICARUS_COLUMN boxptop in hPa (boxptop/100,
     # applied to the R_UNDEF fills too — they stay far out of every bin).
     col = isccp_column(sub.boxtau, sub.boxptop / 100.0, sunlit, sub.boxttop,
-                       top_height=top_height)
+                       top_height=top_height, weights=weights,
+                       smoothing=smoothing)
     # cosp.F90 stores fq_isccp with the pressure bins reordered
     # surface-first (isccp_fq(:,:,7:1:-1)), as for the MODIS histograms.
     col = col._replace(fq_isccp=col.fq_isccp[:, ::-1])

@@ -20,7 +20,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config
+from jcosp import config, surrogate
 from jcosp.lidar.diagnostics import (CalipsoColumn, CloudFractions,
                                      LidarOnlyCloud, cfad_sr, cldfrac,
                                      lidar_column, lidar_only_cloud,
@@ -83,7 +83,8 @@ class CalipsoOutputs(NamedTuple):
 
 
 def simulate_calipso(state: CalipsoInputs, ice_type: int = 0,
-                     dbze=None) -> CalipsoOutputs:
+                     dbze=None, weights=None,
+                     smoothing=surrogate.DEFAULT_SMOOTHING) -> CalipsoOutputs:
     """Run the CALIPSO lidar path on subcolumn model state.
 
     Parameters
@@ -95,6 +96,14 @@ def simulate_calipso(state: CalipsoInputs, ice_type: int = 0,
         Attenuated radar reflectivity on *model* levels (e.g.
         ``simulate_cloudsat(...).dbze``). When given, the joint
         CALIPSO/CloudSat lidar-only cloud product is also computed.
+    weights : (ncol, *batch), optional
+        SCOPS subcolumn weight of the realization the condensate fields
+        were built on (``simulate_cloudsat(...).subcolumn_weight``),
+        through which the cloud fractions respond to the model cloud
+        fraction.
+    smoothing : jcosp.surrogate.Smoothing
+        Widths of the derivatives across the detection and phase tests and
+        the bin edges; no value depends on it.
     """
     opt = lidar_optics(
         state.q_lsliq, state.q_lsice, state.q_cvliq, state.q_cvice,
@@ -110,7 +119,8 @@ def simulate_calipso(state: CalipsoInputs, ice_type: int = 0,
     # lower-interface pressure (cosp.F90 passes phalf(:,2:nlev+1)).
     col = lidar_column(sub.pnorm, sub.pmol, sub.pnorm_perp,
                        state.pressure_half[1:], state.temperature,
-                       state.zfull, state.zhalf)
+                       state.zfull, state.zhalf, weights=weights,
+                       smoothing=smoothing)
 
     lonly = None
     if dbze is not None:
@@ -124,7 +134,8 @@ def simulate_calipso(state: CalipsoInputs, ice_type: int = 0,
         dbze_r = change_vertical_grid(state.zfull, state.zhalf, dbze,
                                       config.VGRID_ZL, config.VGRID_ZU,
                                       log_units=True)
-        lonly = lidar_only_cloud(pnorm_r, betamol_r, dbze_r)
+        lonly = lidar_only_cloud(pnorm_r, betamol_r, dbze_r, weights=weights,
+                                 smoothing=smoothing)
 
     return CalipsoOutputs(
         beta_mol=sub.pmol, beta_tot=sub.pnorm, betaperp_tot=sub.pnorm_perp,

@@ -22,7 +22,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from jcosp import config
+from jcosp import config, surrogate
 from jcosp.constants import RD_PRECIP
 
 
@@ -58,8 +58,11 @@ def precip_mxratio(pressure, temperature, prec_frac, prec_type,
 
     # Clamp the flux inside the masked branch: hydrometeor-free cells are
     # excluded by `in_precip` but a hard zero would put 0**x and 1/0 in the
-    # gradient graph.
-    flux_safe = jnp.maximum(flux_b, 1e-30)
+    # gradient graph. Flux-free cells take 1 rather than the clamp: with
+    # 1e-30 the slope parameter below overflows float32, and the masked
+    # branch then returns NaN to every derivative that reaches the flux
+    # (0 * inf), whatever is differentiated.
+    flux_safe = jnp.where(flux_b != 0.0, jnp.maximum(flux_b, 1e-30), 1.0)
     mxratio = (flux_safe * (rho / rho0) ** g_x * sigma) ** one_over_xip1 / rho
     mxratio = jnp.where(in_precip & (flux_b > 0.0), mxratio, 0.0)
 
@@ -82,7 +85,8 @@ class SubcolumnHydrometeors(NamedTuple):
 def distribute_hydrometeors(frac_out, prec_frac, pressure, temperature,
                             mr_lsliq, mr_lsice, mr_ccliq, mr_ccice,
                             fl_lsrain, fl_lssnow, fl_lsgrpl,
-                            fl_ccrain, fl_ccsnow, reff_in=None):
+                            fl_ccrain, fl_ccsnow, reff_in=None,
+                            weights=None):
     """Distribute gridbox-mean condensate and precip fluxes onto subcolumns.
 
     Port of the ``use_precipitation_fluxes=.true.`` path of
@@ -91,6 +95,12 @@ def distribute_hydrometeors(frac_out, prec_frac, pressure, temperature,
     ``frac_out``/``prec_frac`` are the SCOPS/PREC_SCOPS maps
     (nlev, ncol, *batch). ``reff_in``, if given, is (nlev, *batch, N_HYDRO)
     hydrometeor effective radii (m); 0 selects the PSD defaults downstream.
+
+    ``weights``, if given, is the (ncol, *batch) SCOPS subcolumn weight
+    (``jcosp.subcol.scops.subcolumn_weights``; value one). It gives the
+    sampled cloud and precipitation fractions that the gridbox means are
+    divided by a derivative with respect to the cloud fraction, so that
+    more cloud at the same gridbox-mean water is thinner in-cloud.
 
     Returns
     -------
@@ -101,12 +111,17 @@ def distribute_hydrometeors(frac_out, prec_frac, pressure, temperature,
 
     # Sampled cloud and precip fractions per level (the subcolumn realization
     # of the input fractions; dividing by these conserves gridbox means).
-    frac_ls = jnp.mean(frac_out == config.SGCLD_ST, axis=1)
-    frac_cv = jnp.mean(frac_out == config.SGCLD_CUM, axis=1)
-    prec_ls = jnp.mean((prec_frac == config.PREC_LS)
-                       | (prec_frac == config.PREC_MIXED), axis=1)
-    prec_cv = jnp.mean((prec_frac == config.PREC_CV)
-                       | (prec_frac == config.PREC_MIXED), axis=1)
+    def sampled_fraction(mask):
+        if weights is None:
+            return jnp.mean(mask, axis=1)
+        return surrogate.occurrence(mask, weights, axis=1)
+
+    frac_ls = sampled_fraction(frac_out == config.SGCLD_ST)
+    frac_cv = sampled_fraction(frac_out == config.SGCLD_CUM)
+    prec_ls = sampled_fraction((prec_frac == config.PREC_LS)
+                               | (prec_frac == config.PREC_MIXED))
+    prec_cv = sampled_fraction((prec_frac == config.PREC_CV)
+                               | (prec_frac == config.PREC_MIXED))
 
     def in_cloud(mr, frac):
         # Gridbox mean -> in-cloud value; guard the empty-fraction case that
